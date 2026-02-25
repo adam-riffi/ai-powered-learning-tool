@@ -43,14 +43,16 @@ def _get_notion_client() -> Client:
 # ---------------------------------------------------------------------------
 
 def _rich_text(text: str) -> list:
-    """Notion rich_text block helper."""
-    return [{"text": {"content": text[:2000]}}]  # Notion 2000-char limit
+    return [{"text": {"content": text[:2000]}}]
 
 
 def _create_course_page(notion: Client, course: Course) -> str:
-    """Create the top-level course page under the root page. Returns page_id."""
     root = settings.notion_root_page_id
-    parent = {"page_id": root} if root else {"type": "workspace", "workspace": True}
+
+    if root:
+        parent = {"type": "page_id", "page_id": root}
+    else:
+        parent = {"type": "workspace", "workspace": True}
 
     page = notion.pages.create(
         parent=parent,
@@ -75,9 +77,8 @@ def _create_course_page(notion: Client, course: Course) -> str:
 
 
 def _create_curriculum_database(notion: Client, course_page_id: str, title: str) -> str:
-    """Create the Notion database for modules/lessons. Returns database_id."""
     db = notion.databases.create(
-        parent={"page_id": course_page_id},
+        parent={"type": "page_id", "page_id": course_page_id},
         title=_rich_text(f"{title} — Curriculum"),
         properties={
             "Name": {"title": {}},
@@ -105,14 +106,26 @@ def _create_curriculum_database(notion: Client, course_page_id: str, title: str)
     return db["id"]
 
 
+def _get_database_properties(notion: Client, database_id: str) -> set:
+    """Retourne l'ensemble des noms de propriétés existantes dans la base Notion."""
+    db = notion.databases.retrieve(database_id=database_id)
+    return set(db.get("properties", {}).keys())
+
+
 def _create_module_entry(notion: Client, database_id: str, module: Module) -> str:
+    existing_props = _get_database_properties(notion, database_id)
+
+    properties: dict = {
+        "Name": {"title": _rich_text(module.title)},
+    }
+    if "Type" in existing_props:
+        properties["Type"] = {"select": {"name": "Module"}}
+    if "Module" in existing_props:
+        properties["Module"] = {"rich_text": _rich_text(module.title)}
+
     page = notion.pages.create(
-        parent={"database_id": database_id},
-        properties={
-            "Name": {"title": _rich_text(module.title)},
-            "Type": {"select": {"name": "Module"}},
-            "Module": {"rich_text": _rich_text(module.title)},
-        },
+        parent={"type": "database_id", "database_id": database_id},
+        properties=properties,
         children=(
             [{"object": "block", "type": "paragraph",
               "paragraph": {"rich_text": _rich_text(module.description)}}]
@@ -125,6 +138,8 @@ def _create_module_entry(notion: Client, database_id: str, module: Module) -> st
 def _create_lesson_entry(
     notion: Client, database_id: str, lesson: Lesson, module_title: str
 ) -> str:
+    existing_props = _get_database_properties(notion, database_id)
+
     children = []
     if lesson.objective:
         children.append({
@@ -142,21 +157,23 @@ def _create_lesson_entry(
             "paragraph": {"rich_text": _rich_text(lesson.content)},
         })
 
-    tag_options = [{"name": t} for t in (lesson.tags or [])]
+    properties: dict = {
+        "Name": {"title": _rich_text(lesson.title)},
+    }
+    if "Type" in existing_props:
+        properties["Type"] = {"select": {"name": "Lesson"}}
+    if "Module" in existing_props:
+        properties["Module"] = {"rich_text": _rich_text(module_title)}
+    if "Status" in existing_props:
+        properties["Status"] = {
+            "select": {"name": "Completed" if lesson.is_completed else "Not Started"}
+        }
+    if "Tags" in existing_props:
+        properties["Tags"] = {"multi_select": [{"name": t} for t in (lesson.tags or [])]}
 
     page = notion.pages.create(
-        parent={"database_id": database_id},
-        properties={
-            "Name": {"title": _rich_text(lesson.title)},
-            "Type": {"select": {"name": "Lesson"}},
-            "Module": {"rich_text": _rich_text(module_title)},
-            "Status": {
-                "select": {
-                    "name": "Completed" if lesson.is_completed else "Not Started"
-                }
-            },
-            "Tags": {"multi_select": tag_options},
-        },
+        parent={"type": "database_id", "database_id": database_id},
+        properties=properties,
         children=children,
     )
     return page["id"]
@@ -169,36 +186,9 @@ def _create_lesson_entry(
 def manage_notion_page(action: str, **kwargs: Any) -> dict:
     """Create, query, update, or delete Notion pages for a course.
 
-    The database is always the source of truth.
-    Notion is a one-way export destination only.
-    Flashcards are NOT included in Notion exports.
-
     Actions
     -------
-    publish_course
-        Required: course_id (int)
-        Creates: Course page → Curriculum database → Module + Lesson entries.
-        Updates the DB with Notion IDs for all created pages.
-        Returns:  {"course_page_id": ..., "database_id": ..., "pages_created": <n>}
-
-    query_page
-        Required: page_id (str)
-        Returns:  Notion page metadata dict
-
-    update_page
-        Required: page_id (str),
-                  properties (dict) — Notion properties object
-        Returns:  updated Notion page metadata
-
-    delete_page
-        Required: page_id (str)
-        Archives the page in Notion (Notion does not support hard delete via API).
-        Returns:  {"archived": true, "page_id": ...}
-
-    sync_status
-        Required: course_id (int)
-        Returns:  {"synced": [...lesson dicts...], "unsynced": [...lesson dicts...],
-                   "last_synced_at": ...}
+    publish_course / query_page / update_page / delete_page / sync_status
     """
     action = action.strip().lower()
 

@@ -1,7 +1,9 @@
 """Page de génération de cours.
 
-Permet à l'utilisateur de décrire un cours et de suivre
-sa création en temps réel.
+Deux modes :
+- Sujet libre : l'app génère tout le contenu
+- Contenu personnel : l'utilisateur colle du texte ou uploade un PDF,
+  l'app structure et génère flashcards + quiz à partir de ce contenu.
 
 Placement : quiz_app/pages/0_Generate.py
 """
@@ -10,16 +12,16 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import json
+import io
 import streamlit as st
 from database import init_db
 from config import settings
 
 init_db()
 
-st.set_page_config(page_title="Générer un cours", page_icon="✨", layout="wide")
+st.set_page_config(page_title="Créer un cours", page_icon="✨", layout="wide")
 
 st.title("✨ Créer un cours")
-st.caption("Décrivez le cours souhaité. Les leçons, flashcards et questions sont générés automatiquement.")
 
 # ---------------------------------------------------------------------------
 # Vérification de la clé Groq
@@ -33,66 +35,25 @@ if not settings.groq_api_key:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Formulaire
+# Helpers
 # ---------------------------------------------------------------------------
-with st.form("generation_form"):
-    st.subheader("Paramètres du cours")
 
-    col1, col2 = st.columns(2)
+level_map = {"Débutant": "beginner", "Intermédiaire": "intermediate", "Avancé": "advanced"}
 
-    with col1:
-        subject = st.text_input(
-            "Sujet *",
-            placeholder="ex: Les bases de Python",
-        )
-        level = st.selectbox(
-            "Niveau",
-            options=["Débutant", "Intermédiaire", "Avancé"],
-        )
-
-    with col2:
-        num_modules = st.slider("Nombre de modules", min_value=1, max_value=5, value=2)
-        num_lessons = st.slider("Leçons par module", min_value=1, max_value=4, value=2)
-
-    extra = st.text_area(
-        "Instructions supplémentaires (optionnel)",
-        placeholder="ex: public lycéen, exemples concrets, focus sur la pratique...",
-        height=80,
-    )
-
-    notion_col, _ = st.columns([1, 2])
-    with notion_col:
-        publish_notion = st.checkbox(
-            "Publier sur Notion après génération",
-            value=False,
-            disabled=not settings.notion_api_key,
-            help="Nécessite NOTION_API_KEY et NOTION_ROOT_PAGE_ID dans .env"
-            if not settings.notion_api_key
-            else None,
-        )
-
-    submitted = st.form_submit_button("🚀 Lancer", type="primary", use_container_width=True)
-
-# ---------------------------------------------------------------------------
-# Génération
-# ---------------------------------------------------------------------------
-if submitted:
-    if not subject.strip():
-        st.warning("Veuillez renseigner le sujet du cours.")
+def extract_pdf_text(uploaded_file) -> str:
+    """Extrait le texte d'un PDF uploadé via Streamlit."""
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(uploaded_file.read()))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n\n".join(pages).strip()
+    except ImportError:
+        st.error("pypdf n'est pas installé. Lancez : `pip install pypdf`")
         st.stop()
 
-    level_map = {"Débutant": "beginner", "Intermédiaire": "intermediate", "Avancé": "advanced"}
-    level_en = level_map[level]
 
-    user_message = (
-        f"Crée un cours complet sur : {subject.strip()}.\n"
-        f"Niveau : {level} ({level_en}).\n"
-        f"Structure : {num_modules} module(s), {num_lessons} leçon(s) par module.\n"
-        f"Pour chaque leçon, génère les flashcards et les questions de quiz.\n"
-    )
-    if extra.strip():
-        user_message += f"Instructions supplémentaires : {extra.strip()}\n"
-
+def run_generation(user_message: str, publish_notion: bool) -> None:
+    """Lance la génération et affiche la progression."""
     st.divider()
     st.subheader("Progression")
 
@@ -169,3 +130,166 @@ if submitted:
     except Exception as e:
         status_placeholder.error(f"Une erreur s'est produite : {e}")
         update_log(f"\n✗ **Erreur :** {e}")
+
+
+# ---------------------------------------------------------------------------
+# Onglets
+# ---------------------------------------------------------------------------
+tab_subject, tab_content = st.tabs(["📝 Depuis un sujet", "📄 Depuis mon contenu"])
+
+
+# ── Onglet 1 : sujet libre ──────────────────────────────────────────────────
+with tab_subject:
+    st.caption("Décrivez le cours souhaité, le contenu est généré automatiquement.")
+
+    with st.form("form_subject"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            subject = st.text_input(
+                "Sujet *",
+                placeholder="ex: Les bases de Python",
+            )
+            level = st.selectbox(
+                "Niveau",
+                options=["Débutant", "Intermédiaire", "Avancé"],
+                key="level_subject",
+            )
+
+        with col2:
+            num_modules = st.slider("Nombre de modules", min_value=1, max_value=5, value=2, key="mod_subject")
+            num_lessons = st.slider("Leçons par module", min_value=1, max_value=4, value=2, key="les_subject")
+
+        extra = st.text_area(
+            "Instructions supplémentaires (optionnel)",
+            placeholder="ex: public lycéen, exemples concrets, focus sur la pratique...",
+            height=80,
+            key="extra_subject",
+        )
+
+        publish_notion_s = st.checkbox(
+            "Publier sur Notion après génération",
+            value=False,
+            disabled=not settings.notion_api_key,
+            key="notion_subject",
+        )
+
+        submitted_subject = st.form_submit_button("🚀 Lancer", type="primary", use_container_width=True)
+
+    if submitted_subject:
+        if not subject.strip():
+            st.warning("Veuillez renseigner le sujet du cours.")
+            st.stop()
+
+        user_message = (
+            f"Crée un cours complet sur : {subject.strip()}.\n"
+            f"Niveau : {level} ({level_map[level]}).\n"
+            f"Structure : {num_modules} module(s), {num_lessons} leçon(s) par module.\n"
+            f"Pour chaque leçon, génère les flashcards et les questions de quiz.\n"
+        )
+        if extra.strip():
+            user_message += f"Instructions supplémentaires : {extra.strip()}\n"
+
+        run_generation(user_message, publish_notion_s)
+
+
+# ── Onglet 2 : contenu personnel ────────────────────────────────────────────
+with tab_content:
+    st.caption("Collez votre contenu ou uploadez un PDF. L'app structure le cours et génère les flashcards et quiz.")
+
+    with st.form("form_content"):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            course_title = st.text_input(
+                "Titre du cours *",
+                placeholder="ex: Cours de thermodynamique",
+            )
+            level_c = st.selectbox(
+                "Niveau",
+                options=["Débutant", "Intermédiaire", "Avancé"],
+                key="level_content",
+            )
+
+        with col2:
+            num_modules_c = st.slider("Nombre de modules", min_value=1, max_value=5, value=2, key="mod_content")
+            num_lessons_c = st.slider("Leçons par module", min_value=1, max_value=4, value=2, key="les_content")
+
+        input_method = st.radio(
+            "Comment fournir le contenu ?",
+            options=["Coller du texte", "Uploader un PDF"],
+            horizontal=True,
+        )
+
+        pasted_text = ""
+        uploaded_pdf = None
+
+        if input_method == "Coller du texte":
+            pasted_text = st.text_area(
+                "Contenu du cours *",
+                placeholder="Collez ici vos notes, slides, ou tout autre contenu...",
+                height=300,
+            )
+        else:
+            uploaded_pdf = st.file_uploader(
+                "Fichier PDF *",
+                type=["pdf"],
+            )
+
+        extra_c = st.text_area(
+            "Instructions supplémentaires (optionnel)",
+            placeholder="ex: insiste sur les formules, ajoute des exemples pratiques...",
+            height=80,
+            key="extra_content",
+        )
+
+        publish_notion_c = st.checkbox(
+            "Publier sur Notion après génération",
+            value=False,
+            disabled=not settings.notion_api_key,
+            key="notion_content",
+        )
+
+        submitted_content = st.form_submit_button("🚀 Lancer", type="primary", use_container_width=True)
+
+    if submitted_content:
+        if not course_title.strip():
+            st.warning("Veuillez renseigner le titre du cours.")
+            st.stop()
+
+        # Récupération du contenu
+        raw_content = ""
+        if input_method == "Coller du texte":
+            if not pasted_text.strip():
+                st.warning("Veuillez coller du contenu.")
+                st.stop()
+            raw_content = pasted_text.strip()
+        else:
+            if uploaded_pdf is None:
+                st.warning("Veuillez uploader un fichier PDF.")
+                st.stop()
+            with st.spinner("Extraction du texte PDF..."):
+                raw_content = extract_pdf_text(uploaded_pdf)
+            if not raw_content:
+                st.error("Impossible d'extraire du texte de ce PDF.")
+                st.stop()
+
+        # Limiter à 12 000 caractères pour ne pas dépasser le contexte
+        if len(raw_content) > 12000:
+            raw_content = raw_content[:12000]
+            st.info("Le contenu a été tronqué à 12 000 caractères pour la génération.")
+
+        user_message = (
+            f"Crée un cours structuré intitulé : \"{course_title.strip()}\".\n"
+            f"Niveau : {level_c} ({level_map[level_c]}).\n"
+            f"Structure : {num_modules_c} module(s), {num_lessons_c} leçon(s) par module.\n"
+            f"Base-toi UNIQUEMENT sur le contenu fourni ci-dessous pour rédiger les leçons, "
+            f"les flashcards et les questions de quiz. "
+            f"Ne complète pas avec des informations externes.\n"
+        )
+        if extra_c.strip():
+            user_message += f"Instructions supplémentaires : {extra_c.strip()}\n"
+
+        user_message += f"\n--- CONTENU ---\n{raw_content}\n--- FIN DU CONTENU ---"
+
+        run_generation(user_message, publish_notion_c)
