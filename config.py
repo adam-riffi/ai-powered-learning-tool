@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./learn_ai.db"
 
+    # Groq (required for the agent)
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama3-70b-8192"
+
     # Notion (optional — only needed for notion_tool)
     notion_api_key: Optional[str] = None
     notion_root_page_id: Optional[str] = None
