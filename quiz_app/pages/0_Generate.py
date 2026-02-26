@@ -35,6 +35,25 @@ if not settings.groq_api_key:
     st.stop()
 
 # ---------------------------------------------------------------------------
+# Bandeau Notion (token de session)
+# ---------------------------------------------------------------------------
+notion_connected = bool(st.session_state.get("notion_token"))
+
+if notion_connected:
+    token_val = st.session_state["notion_token"]
+    masked = token_val[:10] + "..." + token_val[-4:]
+    st.info(
+        f"📄 Notion connecté (`{masked}`). "
+        "Vous pouvez publier automatiquement après génération. "
+        "Pour changer de compte, rendez-vous sur **Connexion Notion**."
+    )
+else:
+    st.warning(
+        "📄 Notion non connecté. Connectez-vous via la page **Connexion Notion** "
+        "pour publier vos cours automatiquement."
+    )
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -98,6 +117,28 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
 
     status_placeholder.info("⏳ Génération en cours... (30 à 90 secondes selon la taille du cours)")
 
+    # ── Injection du token Notion de session si disponible ──────────────────
+    notion_token = st.session_state.get("notion_token")
+    notion_root = st.session_state.get("notion_root_page_id", "")
+
+    _cleanup_notion = None
+    if publish_notion and notion_token:
+        import tools.notion_tool as nt
+        from notion_client import Client as NotionClient
+
+        _original_client_fn = nt._get_notion_client
+        _original_root = settings.notion_root_page_id
+
+        def _session_client():
+            return NotionClient(auth=notion_token)
+
+        nt._get_notion_client = _session_client
+        settings.notion_root_page_id = notion_root or None
+
+        def _cleanup_notion():
+            nt._get_notion_client = _original_client_fn
+            settings.notion_root_page_id = _original_root
+
     try:
         from agent import run_agent
 
@@ -106,7 +147,7 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
             on_text=on_text,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
-            publish_to_notion=publish_notion,
+            publish_to_notion=publish_notion and bool(notion_token),
         )
 
         status_placeholder.success("✅ Cours créé avec succès !")
@@ -130,6 +171,9 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
     except Exception as e:
         status_placeholder.error(f"Une erreur s'est produite : {e}")
         update_log(f"\n✗ **Erreur :** {e}")
+    finally:
+        if _cleanup_notion:
+            _cleanup_notion()
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +212,10 @@ with tab_subject:
         )
 
         publish_notion_s = st.checkbox(
-            "Publier sur Notion après génération",
-            value=False,
-            disabled=not settings.notion_api_key,
+            "📄 Publier sur Notion après génération",
+            value=notion_connected,
+            disabled=not notion_connected,
+            help="Connectez-vous d'abord via la page 'Connexion Notion'." if not notion_connected else None,
             key="notion_subject",
         )
 
@@ -244,9 +289,10 @@ with tab_content:
         )
 
         publish_notion_c = st.checkbox(
-            "Publier sur Notion après génération",
-            value=False,
-            disabled=not settings.notion_api_key,
+            "📄 Publier sur Notion après génération",
+            value=notion_connected,
+            disabled=not notion_connected,
+            help="Connectez-vous d'abord via la page 'Connexion Notion'." if not notion_connected else None,
             key="notion_content",
         )
 
