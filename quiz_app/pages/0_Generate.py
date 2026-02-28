@@ -35,25 +35,6 @@ if not settings.groq_api_key:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Bandeau Notion (token de session)
-# ---------------------------------------------------------------------------
-notion_connected = bool(st.session_state.get("notion_token"))
-
-if notion_connected:
-    token_val = st.session_state["notion_token"]
-    masked = token_val[:10] + "..." + token_val[-4:]
-    st.info(
-        f"📄 Notion connecté (`{masked}`). "
-        "Vous pouvez publier automatiquement après génération. "
-        "Pour changer de compte, rendez-vous sur **Connexion Notion**."
-    )
-else:
-    st.warning(
-        "📄 Notion non connecté. Connectez-vous via la page **Connexion Notion** "
-        "pour publier vos cours automatiquement."
-    )
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -117,28 +98,6 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
 
     status_placeholder.info("⏳ Génération en cours... (30 à 90 secondes selon la taille du cours)")
 
-    # ── Injection du token Notion de session si disponible ──────────────────
-    notion_token = st.session_state.get("notion_token")
-    notion_root = st.session_state.get("notion_root_page_id", "")
-
-    _cleanup_notion = None
-    if publish_notion and notion_token:
-        import tools.notion_tool as nt
-        from notion_client import Client as NotionClient
-
-        _original_client_fn = nt._get_notion_client
-        _original_root = settings.notion_root_page_id
-
-        def _session_client():
-            return NotionClient(auth=notion_token)
-
-        nt._get_notion_client = _session_client
-        settings.notion_root_page_id = notion_root or None
-
-        def _cleanup_notion():
-            nt._get_notion_client = _original_client_fn
-            settings.notion_root_page_id = _original_root
-
     try:
         from agent import run_agent
 
@@ -147,7 +106,7 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
             on_text=on_text,
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
-            publish_to_notion=publish_notion and bool(notion_token),
+            publish_to_notion=publish_notion,
         )
 
         status_placeholder.success("✅ Cours créé avec succès !")
@@ -171,9 +130,6 @@ def run_generation(user_message: str, publish_notion: bool) -> None:
     except Exception as e:
         status_placeholder.error(f"Une erreur s'est produite : {e}")
         update_log(f"\n✗ **Erreur :** {e}")
-    finally:
-        if _cleanup_notion:
-            _cleanup_notion()
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +168,9 @@ with tab_subject:
         )
 
         publish_notion_s = st.checkbox(
-            "📄 Publier sur Notion après génération",
-            value=notion_connected,
-            disabled=not notion_connected,
-            help="Connectez-vous d'abord via la page 'Connexion Notion'." if not notion_connected else None,
+            "Publier sur Notion après génération",
+            value=False,
+            disabled=not settings.notion_api_key,
             key="notion_subject",
         )
 
@@ -242,63 +197,67 @@ with tab_subject:
 with tab_content:
     st.caption("Collez votre contenu ou uploadez un PDF. L'app structure le cours et génère les flashcards et quiz.")
 
-    with st.form("form_content"):
-        col1, col2 = st.columns(2)
+    # ── Paramètres du cours (dans le formulaire) ──
+    col1, col2 = st.columns(2)
+    with col1:
+        course_title = st.text_input(
+            "Titre du cours *",
+            placeholder="ex: Cours de thermodynamique",
+            key="course_title_content",
+        )
+        level_c = st.selectbox(
+            "Niveau",
+            options=["Débutant", "Intermédiaire", "Avancé"],
+            key="level_content",
+        )
+    with col2:
+        num_modules_c = st.slider("Nombre de modules", min_value=1, max_value=5, value=2, key="mod_content")
+        num_lessons_c = st.slider("Leçons par module", min_value=1, max_value=4, value=2, key="les_content")
 
-        with col1:
-            course_title = st.text_input(
-                "Titre du cours *",
-                placeholder="ex: Cours de thermodynamique",
-            )
-            level_c = st.selectbox(
-                "Niveau",
-                options=["Débutant", "Intermédiaire", "Avancé"],
-                key="level_content",
-            )
+    # ── Choix du mode de saisie (HORS formulaire pour re-render immédiat) ──
+    input_method = st.radio(
+        "Comment fournir le contenu ?",
+        options=["Coller du texte", "Uploader un PDF"],
+        horizontal=True,
+        key="input_method_content",
+    )
 
-        with col2:
-            num_modules_c = st.slider("Nombre de modules", min_value=1, max_value=5, value=2, key="mod_content")
-            num_lessons_c = st.slider("Leçons par module", min_value=1, max_value=4, value=2, key="les_content")
+    # ── Zone de contenu (HORS formulaire) ──
+    pasted_text = ""
+    uploaded_pdf = None
 
-        input_method = st.radio(
-            "Comment fournir le contenu ?",
-            options=["Coller du texte", "Uploader un PDF"],
-            horizontal=True,
+    if input_method == "Coller du texte":
+        pasted_text = st.text_area(
+            "Contenu du cours *",
+            placeholder="Collez ici vos notes, slides, ou tout autre contenu...",
+            height=300,
+            key="pasted_text_content",
+        )
+    else:
+        uploaded_pdf = st.file_uploader(
+            "Fichier PDF *",
+            type=["pdf"],
+            key="pdf_uploader_content",
         )
 
-        pasted_text = ""
-        uploaded_pdf = None
+    # ── Instructions supplémentaires + Notion + Bouton Lancer ──
+    extra_c = st.text_area(
+        "Instructions supplémentaires (optionnel)",
+        placeholder="ex: insiste sur les formules, ajoute des exemples pratiques...",
+        height=80,
+        key="extra_content",
+    )
 
-        if input_method == "Coller du texte":
-            pasted_text = st.text_area(
-                "Contenu du cours *",
-                placeholder="Collez ici vos notes, slides, ou tout autre contenu...",
-                height=300,
-            )
-        else:
-            uploaded_pdf = st.file_uploader(
-                "Fichier PDF *",
-                type=["pdf"],
-            )
+    publish_notion_c = st.checkbox(
+        "Publier sur Notion après génération",
+        value=False,
+        disabled=not settings.notion_api_key,
+        key="notion_content",
+    )
 
-        extra_c = st.text_area(
-            "Instructions supplémentaires (optionnel)",
-            placeholder="ex: insiste sur les formules, ajoute des exemples pratiques...",
-            height=80,
-            key="extra_content",
-        )
+    launch_content = st.button("🚀 Lancer", type="primary", use_container_width=True, key="launch_content")
 
-        publish_notion_c = st.checkbox(
-            "📄 Publier sur Notion après génération",
-            value=notion_connected,
-            disabled=not notion_connected,
-            help="Connectez-vous d'abord via la page 'Connexion Notion'." if not notion_connected else None,
-            key="notion_content",
-        )
-
-        submitted_content = st.form_submit_button("🚀 Lancer", type="primary", use_container_width=True)
-
-    if submitted_content:
+    if launch_content:
         if not course_title.strip():
             st.warning("Veuillez renseigner le titre du cours.")
             st.stop()

@@ -155,7 +155,7 @@ else:
 
 **2.** Cliquez **"+ New integration"**, donnez-lui un nom (ex: *Learn AI*) et s\u00e9lectionnez votre workspace.
 
-**3.** Copiez le **"Internal Integration Secret"** qui commence par `secret_\u2026`
+**3.** Copiez le **"Internal Integration Secret"** qui commence par `ntn_\u2026`
 
 **4.** Sur la page Notion o\u00f9 vous voulez publier : cliquez **"\u2026"** en haut \u00e0 droite \u2192 **"Add connections"** \u2192 s\u00e9lectionnez votre int\u00e9gration.
 
@@ -172,7 +172,7 @@ else:
             "Token d'int\u00e9gration *",
             type="password",
             placeholder="ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            help="Commence par 'secret_'. Trouvez-le sur notion.so/my-integrations",
+            help="Commence par 'ntn_'. Trouvez-le sur notion.so/my-integrations",
         )
 
         root_input = st.text_input(
@@ -197,7 +197,7 @@ else:
         if not token_clean:
             st.error("Le token est requis.")
         elif not token_clean.startswith("ntn_"):
-            st.warning("\u26a0\ufe0f Le token doit commencer par `secret_`. V\u00e9rifiez votre copie.")
+            st.warning("\u26a0\ufe0f Le token doit commencer par `ntn_`. V\u00e9rifiez votre copie.")
         else:
             with st.spinner("V\u00e9rification du token aupr\u00e8s de Notion..."):
                 try:
