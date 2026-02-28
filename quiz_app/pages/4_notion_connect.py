@@ -171,7 +171,7 @@ else:
         token_input = st.text_input(
             "Token d'int\u00e9gration *",
             type="password",
-            placeholder="secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            placeholder="ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             help="Commence par 'secret_'. Trouvez-le sur notion.so/my-integrations",
         )
 
@@ -196,7 +196,7 @@ else:
 
         if not token_clean:
             st.error("Le token est requis.")
-        elif not token_clean.startswith("secret_"):
+        elif not token_clean.startswith("ntn_"):
             st.warning("\u26a0\ufe0f Le token doit commencer par `secret_`. V\u00e9rifiez votre copie.")
         else:
             with st.spinner("V\u00e9rification du token aupr\u00e8s de Notion..."):
