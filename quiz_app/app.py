@@ -2,12 +2,6 @@
 
 Run with:
     streamlit run quiz_app/app.py
-
-This page lets users:
-1. Select courses
-2. Pick specific lessons
-3. Choose number of questions per lesson and question type filter
-4. Start the quiz — which stores attempts and navigates to Take_Quiz
 """
 import sys
 import os
@@ -26,6 +20,18 @@ st.set_page_config(page_title="Learn AI", page_icon="🎓", layout="wide")
 
 st.title("🎓 Learning Assistant")
 st.caption("Select lessons, then start a quiz or study flashcards.")
+
+# ---------------------------------------------------------------------------
+# Bandeau de connexion Notion (si connecté via la page Connexion)
+# ---------------------------------------------------------------------------
+if st.session_state.get("notion_token"):
+    token_val = st.session_state["notion_token"]
+    masked = token_val[:10] + "..." + token_val[-4:]
+    st.info(
+        f"📄 Notion connecté (`{masked}`). "
+        "Vous pouvez publier automatiquement après génération. "
+        "Pour changer de compte, rendez-vous sur **Connexion Notion**."
+    )
 
 # ---------------------------------------------------------------------------
 # Load all courses
@@ -284,46 +290,46 @@ with quiz_col:
 # ---------------------------------------------------------------------------
 # Notion — Publication
 # ---------------------------------------------------------------------------
-if settings.notion_api_key:
+session_token = st.session_state.get("notion_token")
+session_root  = st.session_state.get("notion_root_page_id") or None
+
+# Affiche la section si token session OU clé .env présente
+if session_token or settings.notion_api_key:
     st.divider()
     st.subheader("📄 Publier sur Notion")
 
     courses_to_publish = {c["title"]: c for c in selected_courses}
-
     already_synced = [t for t, c in courses_to_publish.items() if c.get("notion_page_id")]
-    not_synced = [t for t, c in courses_to_publish.items() if not c.get("notion_page_id")]
 
     if already_synced:
         st.info(
             f"Déjà publié : {', '.join(already_synced)}. "
-            "Republier créerait des doublons sur Notion."
+            "La republication supprimera et recréera automatiquement les pages Notion."
         )
 
-    if not_synced:
-        st.caption(f"Cours non encore publiés : {', '.join(not_synced)}")
-
-    if st.button(
-        "📤 Publier sur Notion",
-        disabled=len(not_synced) == 0,
-        use_container_width=False,
-    ):
+    if st.button("📤 Publier / Republier sur Notion", use_container_width=False):
         from tools import manage_notion_page
 
-        results = []
-        errors = []
-
-        for title in not_synced:
-            course = courses_to_publish[title]
+        for title, course in courses_to_publish.items():
             try:
-                result = manage_notion_page(
-                    action="publish_course",
-                    course_id=course["id"],
-                )
-                results.append(f"✓ **{title}** — {result['pages_created']} pages créées")
-            except Exception as e:
-                errors.append(f"✗ **{title}** — {e}")
+                kwargs: dict = {"action": "publish_course", "course_id": course["id"]}
 
-        for r in results:
-            st.success(r)
-        for e in errors:
-            st.error(e)
+                # Priorité : token de session > clé .env
+                if session_token:
+                    kwargs["api_key"] = session_token
+                    kwargs["root_page_id"] = session_root
+
+                result = manage_notion_page(**kwargs)
+                action_label = "Republié" if course.get("notion_page_id") else "Publié"
+                st.success(
+                    f"✓ **{title}** — {action_label}, {result['pages_created']} pages créées"
+                )
+            except Exception as e:
+                st.error(f"✗ **{title}** — {e}")
+
+else:
+    st.divider()
+    st.info(
+        "💡 Connectez votre compte Notion pour publier vos cours. "
+        "→ Rendez-vous sur la page **Connexion Notion** dans le menu."
+    )

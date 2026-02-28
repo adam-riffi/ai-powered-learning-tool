@@ -4,11 +4,12 @@ Publishes course content (Courses → Modules → Lessons) to Notion.
 The database is ALWAYS the source of truth — Notion is a read-only export.
 Flashcards and quiz attempts are NOT synced to Notion.
 
-Requires NOTION_API_KEY and NOTION_ROOT_PAGE_ID in your .env file.
+Requires NOTION_API_KEY and NOTION_ROOT_PAGE_ID in your .env file,
+OR pass api_key/root_page_id directly to publish_course for session-based auth.
 
 Notion structure created
 ------------------------
-Root page (from .env)
+Root page (from .env or session)
   └── Course page
         ├── Course info (callout block)
         └── Curriculum database
@@ -27,15 +28,20 @@ from models import Course, Lesson, Module
 
 
 # ---------------------------------------------------------------------------
-# Notion client (lazy — only instantiated when needed)
+# Notion client
 # ---------------------------------------------------------------------------
 
-def _get_notion_client() -> Client:
-    if not settings.notion_api_key:
+def _get_notion_client(api_key: Optional[str] = None) -> Client:
+    """Retourne un client Notion.
+
+    Priority : api_key argument > settings.notion_api_key (.env)
+    """
+    key = api_key or settings.notion_api_key
+    if not key:
         raise RuntimeError(
-            "NOTION_API_KEY is not set. Add it to your .env file."
+            "NOTION_API_KEY is not set. Add it to your .env file or connect via the Notion page."
         )
-    return Client(auth=settings.notion_api_key)
+    return Client(auth=key)
 
 
 # ---------------------------------------------------------------------------
@@ -46,8 +52,18 @@ def _rich_text(text: str) -> list:
     return [{"text": {"content": text[:2000]}}]
 
 
-def _create_course_page(notion: Client, course: Course) -> str:
-    root = settings.notion_root_page_id
+def _archive_page_if_exists(notion: Client, page_id: Optional[str]) -> None:
+    """Archive (soft-delete) a Notion page if a page_id is stored."""
+    if not page_id:
+        return
+    try:
+        notion.pages.update(page_id=page_id, archived=True)
+    except Exception:
+        pass
+
+
+def _create_course_page(notion: Client, course: Course, root_page_id: Optional[str] = None) -> str:
+    root = root_page_id or settings.notion_root_page_id
 
     if root:
         parent = {"type": "page_id", "page_id": root}
@@ -56,9 +72,7 @@ def _create_course_page(notion: Client, course: Course) -> str:
 
     page = notion.pages.create(
         parent=parent,
-        properties={
-            "title": {"title": _rich_text(course.title)}
-        },
+        properties={"title": {"title": _rich_text(course.title)}},
         children=[
             {
                 "object": "block",
@@ -107,7 +121,6 @@ def _create_curriculum_database(notion: Client, course_page_id: str, title: str)
 
 
 def _get_database_properties(notion: Client, database_id: str) -> set:
-    """Retourne l'ensemble des noms de propriétés existantes dans la base Notion."""
     db = notion.databases.retrieve(database_id=database_id)
     return set(db.get("properties", {}).keys())
 
@@ -115,9 +128,7 @@ def _get_database_properties(notion: Client, database_id: str) -> set:
 def _create_module_entry(notion: Client, database_id: str, module: Module) -> str:
     existing_props = _get_database_properties(notion, database_id)
 
-    properties: dict = {
-        "Name": {"title": _rich_text(module.title)},
-    }
+    properties: dict = {"Name": {"title": _rich_text(module.title)}}
     if "Type" in existing_props:
         properties["Type"] = {"select": {"name": "Module"}}
     if "Module" in existing_props:
@@ -157,9 +168,7 @@ def _create_lesson_entry(
             "paragraph": {"rich_text": _rich_text(lesson.content)},
         })
 
-    properties: dict = {
-        "Name": {"title": _rich_text(lesson.title)},
-    }
+    properties: dict = {"Name": {"title": _rich_text(lesson.title)}}
     if "Type" in existing_props:
         properties["Type"] = {"select": {"name": "Lesson"}}
     if "Module" in existing_props:
@@ -189,6 +198,10 @@ def manage_notion_page(action: str, **kwargs: Any) -> dict:
     Actions
     -------
     publish_course / query_page / update_page / delete_page / sync_status
+
+    Optional kwargs for session-based auth (overrides .env):
+        api_key      : str  — Notion integration token
+        root_page_id : str  — Notion root page ID
     """
     action = action.strip().lower()
 
@@ -213,15 +226,25 @@ def manage_notion_page(action: str, **kwargs: Any) -> dict:
 # Action implementations
 # ---------------------------------------------------------------------------
 
-def _publish_course(course_id: int, **_: Any) -> dict:
-    notion = _get_notion_client()
+def _publish_course(
+    course_id: int,
+    api_key: Optional[str] = None,
+    root_page_id: Optional[str] = None,
+    **_: Any,
+) -> dict:
+    # api_key et root_page_id peuvent venir de la session Streamlit
+    notion = _get_notion_client(api_key=api_key)
 
     with get_db() as db:
         course = db.get(Course, int(course_id))
         if not course:
             raise ValueError(f"Course {course_id} not found")
 
-        course_page_id = _create_course_page(notion, course)
+        # Mémorise l'ancienne page avant de créer la nouvelle
+        old_course_page_id = course.notion_page_id
+
+        # ── Étape 1 : Crée la nouvelle page AVANT d'archiver l'ancienne ──
+        course_page_id = _create_course_page(notion, course, root_page_id=root_page_id)
         database_id = _create_curriculum_database(notion, course_page_id, course.title)
 
         pages_created = 0
@@ -243,6 +266,9 @@ def _publish_course(course_id: int, **_: Any) -> dict:
         course.last_synced_at = datetime.utcnow()
         db.flush()
 
+        # ── Étape 2 : Archive l'ancienne page APRÈS que la nouvelle est créée ──
+        _archive_page_if_exists(notion, old_course_page_id)
+
     return {
         "course_page_id": course_page_id,
         "database_id": database_id,
@@ -250,18 +276,18 @@ def _publish_course(course_id: int, **_: Any) -> dict:
     }
 
 
-def _query_page(page_id: str, **_: Any) -> dict:
-    notion = _get_notion_client()
+def _query_page(page_id: str, api_key: Optional[str] = None, **_: Any) -> dict:
+    notion = _get_notion_client(api_key=api_key)
     return notion.pages.retrieve(page_id=page_id)
 
 
-def _update_page(page_id: str, properties: dict, **_: Any) -> dict:
-    notion = _get_notion_client()
+def _update_page(page_id: str, properties: dict, api_key: Optional[str] = None, **_: Any) -> dict:
+    notion = _get_notion_client(api_key=api_key)
     return notion.pages.update(page_id=page_id, properties=properties)
 
 
-def _delete_page(page_id: str, **_: Any) -> dict:
-    notion = _get_notion_client()
+def _delete_page(page_id: str, api_key: Optional[str] = None, **_: Any) -> dict:
+    notion = _get_notion_client(api_key=api_key)
     notion.pages.update(page_id=page_id, archived=True)
     return {"archived": True, "page_id": page_id}
 
