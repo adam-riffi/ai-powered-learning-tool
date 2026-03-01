@@ -81,7 +81,6 @@ def _execute_tool(name: str, arguments: dict) -> str:
     fn = _TOOLS.get(name)
     if fn is None:
         return json.dumps({"error": f"Outil inconnu : {name}"})
-    # Conversion de types courants pour éviter les erreurs de validation
     if name == "manage_curriculum":
         if "hours_per_week" in arguments:
             try:
@@ -122,7 +121,7 @@ def _llm_json(prompt: str, system: str | None = None, max_tokens: int = 1500) ->
         temperature=0.3,
     )
     raw = response.choices[0].message.content or ""
-    # Nettoie les balises markdown
+    # Nettoie les balises markdown code block
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1] if "\n" in raw else raw
@@ -141,7 +140,7 @@ def run_agent(
     on_tool_result: Callable[[str, str], None] | None = None,
     publish_to_notion: bool = False,
 ) -> str:
-    """Traite une demande de création de cours (mode sujet libre)."""
+    """Traite une demande de création de cours (mode direct)."""
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY n'est pas défini.")
 
@@ -227,33 +226,80 @@ def run_agent(
 
 
 # ---------------------------------------------------------------------------
-# Génération de noms de modules via LLM (JSON pur, pas de tool_calls)
+# Analyse automatique de la structure optimale du cours
 # ---------------------------------------------------------------------------
 
-def _generate_module_titles(
-    content_preview: str,
+def _analyze_course_structure(
+    content: str,
     course_title: str,
-    num_modules: int,
     level: str,
-) -> list[str]:
-    """Demande au LLM de proposer des titres de modules en JSON."""
+) -> dict:
+    """
+    Demande au LLM d'analyser le contenu et de proposer une structure optimale :
+    nombre de modules, titres des modules, nombre de leçons par module.
+    Retourne un dict avec 'modules': [{'title': str, 'num_lessons': int}]
+    """
+    content_preview = content[:3000]
+    nb_chars = len(content)
+
+    # Heuristique de base pour orienter le LLM
+    if nb_chars < 2000:
+        hint = "Le contenu est court (< 2000 caractères). Propose 1-2 modules avec 1-2 leçons chacun."
+    elif nb_chars < 6000:
+        hint = "Le contenu est moyen (2000-6000 caractères). Propose 2-3 modules avec 2 leçons chacun."
+    else:
+        hint = "Le contenu est long (> 6000 caractères). Propose 3-4 modules avec 2-3 leçons chacun."
+
     raw = _llm_json(
-        prompt=(
-            f"Propose {num_modules} titres de modules pour un cours intitulé "
-            f"\"{course_title}\" (niveau {level}).\n"
-            f"Réponds UNIQUEMENT avec un tableau JSON de strings, ex: [\"Module 1\", \"Module 2\"]\n"
-            f"Basé sur ce contenu :\n{content_preview[:1000]}"
+        system=(
+            "Tu es un expert en ingénierie pédagogique. "
+            "Tu analyses du contenu de cours et proposes une structure optimale. "
+            "Tu réponds UNIQUEMENT en JSON valide, sans explication."
         ),
-        max_tokens=300,
+        prompt=(
+            f"Analyse ce contenu pour un cours intitulé \"{course_title}\" (niveau : {level}).\n"
+            f"{hint}\n\n"
+            f"Réponds UNIQUEMENT avec ce JSON (sans markdown, sans explication) :\n"
+            f'{{"modules": [{{"title": "Titre du module", "num_lessons": 2}}]}}\n\n'
+            f"Règles :\n"
+            f"- Les titres de modules doivent refléter précisément les grandes thématiques du contenu\n"
+            f"- num_lessons entre 1 et 3 selon la densité du contenu pour ce module\n"
+            f"- Maximum 5 modules au total\n\n"
+            f"Contenu :\n{content_preview}"
+        ),
+        max_tokens=600,
     )
+
     try:
-        titles = json.loads(raw)
-        if isinstance(titles, list) and len(titles) >= num_modules:
-            return [str(t) for t in titles[:num_modules]]
-    except json.JSONDecodeError:
+        data = json.loads(raw)
+        modules = data.get("modules", [])
+        if isinstance(modules, list) and len(modules) > 0:
+            # Validation et nettoyage
+            result = []
+            for m in modules[:5]:
+                if isinstance(m, dict) and "title" in m:
+                    result.append({
+                        "title": str(m["title"]),
+                        "num_lessons": max(1, min(3, int(m.get("num_lessons", 2)))),
+                    })
+            if result:
+                return {"modules": result}
+    except (json.JSONDecodeError, ValueError, TypeError):
         pass
-    # Fallback si le JSON est invalide
-    return [f"Module {i + 1}" for i in range(num_modules)]
+
+    # Fallback : structure par défaut basée sur la taille
+    if nb_chars < 2000:
+        return {"modules": [{"title": course_title, "num_lessons": 2}]}
+    elif nb_chars < 5000:
+        return {"modules": [
+            {"title": f"Partie 1 — {course_title}", "num_lessons": 2},
+            {"title": f"Partie 2 — {course_title}", "num_lessons": 2},
+        ]}
+    else:
+        return {"modules": [
+            {"title": f"Module {i+1}", "num_lessons": 2}
+            for i in range(3)
+        ]}
 
 
 # ---------------------------------------------------------------------------
@@ -269,31 +315,84 @@ def _generate_lesson_content(
     extra: str,
     pause: float,
 ) -> dict:
+    """
+    Génère le contenu d'une leçon en markdown pur (pas de JSON).
+    On utilise des séparateurs textuels pour extraire titre, objectif et contenu.
+    Cela évite tout problème de JSON imbriqué ou tronqué.
+    """
     time.sleep(pause)
-    raw = _llm_json(
-        prompt=(
-            f"Génère le contenu de la leçon {lesson_index + 1}/{num_lessons} "
-            f"du module \"{module_title}\" (niveau {level}).\n"
-            f"Réponds UNIQUEMENT en JSON valide avec ces champs :\n"
-            f'{{"title": "...", "objective": "...", "content": "..."}}\n'
-            f"Le champ content doit être détaillé en markdown.\n"
-            f"Basé UNIQUEMENT sur :\n{chunk[:3000]}\n"
-            f"{'Instructions : ' + extra if extra else ''}"
-        ),
-        max_tokens=1500,
-    )
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict) and "title" in data:
-            return data
-    except json.JSONDecodeError:
-        pass
-    return {
-        "title": f"Leçon {lesson_index + 1}",
-        "objective": "Comprendre les concepts clés",
-        "content": raw or "Contenu à compléter.",
-    }
 
+    client = Groq(api_key=settings.groq_api_key)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Tu es un tuteur pédagogique expert. "
+                "Tu génères du contenu de cours clair, détaillé et pédagogique. "
+                "Tu suis EXACTEMENT le format demandé, sans ajouter de JSON ni de balises supplémentaires."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Génère la leçon {lesson_index + 1}/{num_lessons} "
+                f"pour le module \"{module_title}\" (niveau : {level}).\n\n"
+                f"Réponds en suivant EXACTEMENT ce format (remplace les crochets par le vrai contenu) :\n\n"
+                f"TITRE: [Titre précis et descriptif de la leçon]\n\n"
+                f"OBJECTIF: [L\'étudiant sera capable de ...]\n\n"
+                f"CONTENU:\n"
+                f"[Contenu détaillé en markdown : utilise ## pour les sections, ### pour les sous-sections, "
+                f"- pour les listes, ``` pour le code. Minimum 400 mots. "
+                f"PAS de JSON, uniquement du texte et du markdown.]\n\n"
+                f"{'Instructions supplémentaires : ' + extra + chr(10) if extra else ''}"
+                f"Basé UNIQUEMENT sur ce contenu :\n{chunk[:4000]}"
+            ),
+        },
+    ]
+
+    response = client.chat.completions.create(
+        model=settings.groq_model,
+        messages=messages,
+        max_tokens=3000,
+        temperature=0.3,
+    )
+    raw = (response.choices[0].message.content or "").strip()
+
+    # Parse le format TITRE / OBJECTIF / CONTENU
+    title = f"Leçon {lesson_index + 1} — {module_title}"
+    objective = "Comprendre et appliquer les concepts clés de cette leçon."
+    content_md = ""
+
+    import re as _re
+
+    # Extrait TITRE
+    m = _re.search(r'^TITRE\s*:\s*(.+)$', raw, _re.MULTILINE)
+    if m:
+        title = m.group(1).strip()
+
+    # Extrait OBJECTIF
+    m = _re.search(r'^OBJECTIF\s*:\s*(.+)$', raw, _re.MULTILINE)
+    if m:
+        objective = m.group(1).strip()
+
+    # Extrait CONTENU (tout ce qui suit "CONTENU:")
+    m = _re.search(r'^CONTENU\s*:\s*\n?(.*)', raw, _re.MULTILINE | _re.DOTALL)
+    if m:
+        content_md = m.group(1).strip()
+    else:
+        # Fallback : si le format n'est pas respecté, on prend tout sauf les 2 premières lignes
+        lines = raw.split("\n")
+        content_md = "\n".join(lines[2:]).strip() if len(lines) > 2 else raw
+
+    # Sécurité : si le contenu ressemble à du JSON, on le rejette et on utilise le chunk
+    if content_md.strip().startswith("{"):
+        content_md = f"## {title}\n\n{chunk[:2000]}"
+
+    return {
+        "title": title,
+        "objective": objective,
+        "content": content_md,
+    }
 
 def _generate_flashcards(
     lesson_title: str,
@@ -302,17 +401,25 @@ def _generate_flashcards(
 ) -> list[dict]:
     time.sleep(pause)
     raw = _llm_json(
+        system=(
+            "Tu es un expert en création de flashcards pédagogiques. "
+            "Tu réponds UNIQUEMENT en JSON valide (tableau), sans markdown autour."
+        ),
         prompt=(
-            f"Génère 4 flashcards pour la leçon \"{lesson_title}\".\n"
+            f"Génère 4 flashcards pour la leçon \"{lesson_title}\".\n\n"
             f"Réponds UNIQUEMENT avec un tableau JSON :\n"
-            f'[{{"front": "Question ?", "back": "Réponse.", "tags": ["tag"]}}]\n'
+            f'[{{"front": "Question précise ?", "back": "Réponse claire et concise.", "tags": ["tag1"]}}]\n\n'
+            f"Règles :\n"
+            f"- Les questions doivent tester la compréhension, pas la mémorisation bête\n"
+            f"- Les réponses doivent être courtes et claires (1-2 phrases)\n"
+            f"- Les tags reflètent le thème de la flashcard\n\n"
             f"Basé sur :\n{lesson_content[:2000]}"
         ),
         max_tokens=800,
     )
     try:
         cards = json.loads(raw)
-        if isinstance(cards, list):
+        if isinstance(cards, list) and len(cards) > 0:
             return cards
     except json.JSONDecodeError:
         pass
@@ -326,14 +433,23 @@ def _generate_quiz(
 ) -> list[dict]:
     time.sleep(pause)
     raw = _llm_json(
+        system=(
+            "Tu es un expert en création de QCM pédagogiques. "
+            "Tu réponds UNIQUEMENT en JSON valide (tableau), sans markdown autour."
+        ),
         prompt=(
-            f"Génère 3 questions QCM pour la leçon \"{lesson_title}\".\n"
+            f"Génère 3 questions QCM pour la leçon \"{lesson_title}\".\n\n"
             f"Réponds UNIQUEMENT avec un tableau JSON :\n"
-            f'[{{"question": "...", "options": ["A","B","C","D"], '
-            f'"correct_answer": "A", "type": "single"}}]\n'
+            f'[{{"question": "Question claire ?", '
+            f'"options": ["Option A", "Option B", "Option C", "Option D"], '
+            f'"correct_answer": "Option A", "type": "single"}}]\n\n'
+            f"Règles :\n"
+            f"- Les questions testent la compréhension réelle du contenu\n"
+            f"- correct_answer doit être EXACTEMENT l'une des options\n"
+            f"- Les distracteurs (mauvaises réponses) doivent être plausibles\n\n"
             f"Basé sur :\n{lesson_content[:2000]}"
         ),
-        max_tokens=800,
+        max_tokens=900,
     )
     try:
         questions = json.loads(raw)
@@ -359,24 +475,29 @@ def _split_into_chunks(content: str, num_chunks: int) -> list[str]:
             chunks.append(content[start:].strip())
             break
         end = start + chunk_size
-        newline_pos = content.find("\n", end)
-        if newline_pos != -1 and newline_pos < end + 500:
+        # Essaye de couper sur un saut de ligne pour ne pas couper au milieu d'un paragraphe
+        newline_pos = content.find("\n\n", end)
+        if newline_pos != -1 and newline_pos < end + 800:
             end = newline_pos
+        else:
+            newline_pos = content.find("\n", end)
+            if newline_pos != -1 and newline_pos < end + 200:
+                end = newline_pos
         chunks.append(content[start:end].strip())
         start = end
     return [c for c in chunks if c]
 
 
 # ---------------------------------------------------------------------------
-# run_agent_chunked : 100% Python direct, zéro tool_calls pour les leçons
+# run_agent_chunked : structure automatique + génération déterministe
 # ---------------------------------------------------------------------------
 
 def run_agent_chunked(
     content: str,
     course_title: str,
     level: str,
-    num_modules: int,
-    num_lessons: int,
+    num_modules: int,        # conservé pour compatibilité, mais ignoré si structure auto
+    num_lessons: int,        # conservé pour compatibilité, mais ignoré si structure auto
     extra_instructions: str = "",
     on_text: Callable[[str], None] | None = None,
     on_tool_call: Callable[[str, dict], None] | None = None,
@@ -387,10 +508,9 @@ def run_agent_chunked(
 ) -> str:
     """
     Génère un cours de façon entièrement déterministe :
+    - Analyse automatique du contenu pour définir la structure optimale
     - La structure (cours + modules) est créée DIRECTEMENT en Python via manage_curriculum
-      → zéro LLM, zéro risque de tool_use_failed
     - Le contenu (leçons, flashcards, quiz) est généré via des appels LLM JSON simples
-      → pas de tool_calls, juste du JSON en réponse
     """
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY n'est pas défini.")
@@ -399,22 +519,26 @@ def run_agent_chunked(
         if on_text:
             on_text(msg)
 
-    total_steps = num_modules + 1
-
-    # ── Étape 0 : génère les titres des modules via LLM (JSON pur) ───────────
+    # ── Étape 0 : Analyse automatique de la structure optimale ───────────────
     if on_chunk_start:
-        on_chunk_start(0, total_steps)
+        on_chunk_start(0, 1)  # placeholder, on ne connaît pas encore le total
 
-    notify("📐 Génération des titres de modules...")
+    notify("🔍 Analyse du contenu pour déterminer la structure optimale...")
 
-    module_titles = _generate_module_titles(
-        content_preview=content[:1500],
+    structure = _analyze_course_structure(
+        content=content,
         course_title=course_title,
-        num_modules=num_modules,
         level=level,
     )
+    modules_plan = structure["modules"]  # [{"title": str, "num_lessons": int}]
 
-    # ── Crée le cours DIRECTEMENT en Python (pas de tool_calls LLM) ──────────
+    total_steps = len(modules_plan) + 1
+    notify(
+        f"📐 Structure définie : {len(modules_plan)} module(s) — "
+        + ", ".join(f"{m['title']} ({m['num_lessons']} leçon(s))" for m in modules_plan)
+    )
+
+    # ── Crée le cours DIRECTEMENT en Python ──────────────────────────────────
     notify(f"💾 Création du cours \"{course_title}\" en base...")
 
     if on_tool_call:
@@ -438,7 +562,13 @@ def run_agent_chunked(
 
     # ── Crée les modules DIRECTEMENT en Python ────────────────────────────────
     module_ids = []
-    for i, title in enumerate(module_titles):
+    module_titles = []
+    module_lesson_counts = []
+
+    for i, mod_plan in enumerate(modules_plan):
+        title = mod_plan["title"]
+        n_lessons = mod_plan["num_lessons"]
+
         if on_tool_call:
             on_tool_call("manage_curriculum", {"action": "add_module", "title": title})
 
@@ -455,43 +585,45 @@ def run_agent_chunked(
         mod_id = mod_result.get("id")
         if mod_id:
             module_ids.append(mod_id)
+            module_titles.append(title)
+            module_lesson_counts.append(n_lessons)
 
     if not module_ids:
         raise RuntimeError("Aucun module créé.")
 
     notify(f"✅ Structure créée : {len(module_ids)} module(s)")
 
-    # ── Découpe le contenu ────────────────────────────────────────────────────
+    # ── Découpe le contenu en chunks (1 par module) ───────────────────────────
     chunks = _split_into_chunks(content, len(module_ids))
 
-    # ── Étapes 1..N : génération des leçons par module ───────────────────────
-    for mod_i, (module_id, module_title, chunk) in enumerate(
-        zip(module_ids, module_titles, chunks)
+    # ── Génération des leçons par module ─────────────────────────────────────
+    total_lessons_created = 0
+
+    for mod_i, (module_id, module_title, chunk, n_lessons) in enumerate(
+        zip(module_ids, module_titles, chunks, module_lesson_counts)
     ):
         if on_chunk_start:
             on_chunk_start(mod_i + 1, total_steps)
 
-        notify(f"📚 Module {mod_i + 1}/{len(module_ids)} : {module_title}")
+        notify(f"📚 Module {mod_i + 1}/{len(module_ids)} : {module_title} ({n_lessons} leçon(s))")
 
-        for lesson_i in range(num_lessons):
-            notify(f"  ✍️ Leçon {lesson_i + 1}/{num_lessons}...")
+        for lesson_i in range(n_lessons):
+            notify(f"  ✍️ Leçon {lesson_i + 1}/{n_lessons}...")
 
-            # Génère le contenu
             lesson_data = _generate_lesson_content(
                 chunk=chunk,
                 module_title=module_title,
                 lesson_index=lesson_i,
-                num_lessons=num_lessons,
+                num_lessons=n_lessons,
                 level=level,
                 extra=extra_instructions,
                 pause=pause_between_chunks,
             )
 
-            lesson_title = lesson_data.get("title", f"Leçon {lesson_i + 1}")
+            lesson_title = lesson_data.get("title", f"Leçon {lesson_i + 1} — {module_title}")
             lesson_objective = lesson_data.get("objective", "")
             lesson_content_text = lesson_data.get("content", "")
 
-            # Sauvegarde la leçon directement
             if on_tool_call:
                 on_tool_call("manage_curriculum", {
                     "action": "add_lesson",
@@ -517,7 +649,9 @@ def run_agent_chunked(
                 notify(f"  ⚠️ Leçon non créée, on continue.")
                 continue
 
-            # Génère et sauvegarde les flashcards
+            total_lessons_created += 1
+
+            # Flashcards
             notify(f"  🃏 Flashcards...")
             cards = _generate_flashcards(
                 lesson_title=lesson_title,
@@ -531,7 +665,7 @@ def run_agent_chunked(
                 if on_tool_result:
                     on_tool_result("manage_flashcards", json.dumps(fc_result))
 
-            # Génère et sauvegarde le quiz
+            # Quiz
             notify(f"  ❓ Quiz...")
             questions = _generate_quiz(
                 lesson_title=lesson_title,
@@ -557,7 +691,7 @@ def run_agent_chunked(
 
     summary = (
         f"✅ Cours \"{course_title}\" créé avec succès !\n"
-        f"{len(module_ids)} module(s), {len(module_ids) * num_lessons} leçon(s), "
+        f"{len(module_ids)} module(s), {total_lessons_created} leçon(s), "
         f"chacune avec flashcards et quiz."
     )
     notify(summary)
