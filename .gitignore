@@ -1,0 +1,39 @@
+# ─── Environnement Python ────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ─── Variables d'environnement ───────────────────────────────────────────────
+.env
+
+# ─── Base de données ─────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Streamlit ───────────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ─── Pytest ──────────────────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─── Éditeurs ────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Distribution / build ────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/

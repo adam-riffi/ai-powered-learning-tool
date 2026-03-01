@@ -2,12 +2,6 @@
 
 Run with:
     streamlit run quiz_app/app.py
-
-This page lets users:
-1. Select courses
-2. Pick specific lessons
-3. Choose number of questions per lesson and question type filter
-4. Start the quiz — which stores attempts and navigates to Take_Quiz
 """
 import sys
 import os
@@ -17,6 +11,7 @@ import streamlit as st
 from database import init_db, get_db
 from models import Course, Module, Lesson, QuizAttempt
 from sqlalchemy import select
+from config import settings
 
 # Ensure tables exist
 init_db()
@@ -27,11 +22,22 @@ st.title("🎓 Learning Assistant")
 st.caption("Select lessons, then start a quiz or study flashcards.")
 
 # ---------------------------------------------------------------------------
+# Bandeau de connexion Notion (si connecté via la page Connexion)
+# ---------------------------------------------------------------------------
+if st.session_state.get("notion_token"):
+    token_val = st.session_state["notion_token"]
+    masked = token_val[:10] + "..." + token_val[-4:]
+    st.info(
+        f"📄 Notion connecté (`{masked}`). "
+        "Vous pouvez publier automatiquement après génération. "
+        "Pour changer de compte, rendez-vous sur **Connexion Notion**."
+    )
+
+# ---------------------------------------------------------------------------
 # Load all courses
 # ---------------------------------------------------------------------------
 with get_db() as db:
     courses = db.scalars(select(Course).order_by(Course.title)).all()
-    # Eagerly load relationships before session closes
     course_data = []
     for course in courses:
         modules_data = []
@@ -67,6 +73,7 @@ with get_db() as db:
                 "title": course.title,
                 "topic": course.topic,
                 "modules": modules_data,
+                "notion_page_id": course.notion_page_id,
             })
 
 if not course_data:
@@ -114,7 +121,7 @@ lesson_by_label = {l["label"]: l for l in all_lessons}
 selected_labels = st.multiselect(
     "Select lessons to include",
     options=lesson_labels,
-    default=lesson_labels,  # all selected by default
+    default=lesson_labels,
 )
 
 if not selected_labels:
@@ -123,7 +130,6 @@ if not selected_labels:
 
 selected_lessons = [lesson_by_label[label] for label in selected_labels]
 
-# Availability hints
 has_any_quiz = any(l.get("has_quizzes") for l in selected_lessons)
 has_any_fc   = any(l.get("has_flashcards") for l in selected_lessons)
 
@@ -135,21 +141,18 @@ st.subheader("Step 3: Quiz settings")
 col1, col2 = st.columns(2)
 
 with col1:
-    # Check how many questions exist across selected lessons
     max_questions = 20
     questions_per_lesson = st.slider(
         "Questions per lesson",
         min_value=1,
         max_value=max_questions,
         value=5,
-        help="The quiz will pick up to this many questions from each lesson's stored questions.",
     )
 
 with col2:
     question_type_filter = st.selectbox(
         "Question type",
         options=["All", "Single-answer only", "Multi-select only"],
-        help="Filter questions by type.",
     )
 
 type_map = {
@@ -160,7 +163,7 @@ type_map = {
 selected_type = type_map[question_type_filter]
 
 # ---------------------------------------------------------------------------
-# Step 4: Choose mode
+# Step 4: Actions
 # ---------------------------------------------------------------------------
 st.divider()
 
@@ -188,7 +191,6 @@ with fc_col:
             if l.get("has_flashcards")
         ]
         st.session_state["flashcard_lessons"] = fc_lessons
-        # Clear stale deck caches so the new selection loads fresh
         for key in list(st.session_state.keys()):
             if key.startswith("fc_deck_"):
                 del st.session_state[key]
@@ -207,8 +209,6 @@ with quiz_col:
         disabled=quiz_disabled,
         help=quiz_help,
     ):
-        # For each selected lesson, find the latest attempt with questions
-        # (or the only existing one) and create a new "session" attempt
         attempt_ids: list[dict] = []
         errors: list[str] = []
 
@@ -219,19 +219,16 @@ with quiz_col:
                     errors.append(f"Lesson '{lesson_info['title']}' not found.")
                     continue
 
-                # Gather all questions from all previous attempts for this lesson
                 all_questions: list[dict] = []
                 for attempt in lesson.quiz_attempts:
                     all_questions.extend(attempt.questions or [])
 
                 if not all_questions:
                     errors.append(
-                        f"Lesson '{lesson_info['title']}' has no quiz questions. "
-                        "Ask the agent to create quiz questions for it first."
+                        f"Lesson '{lesson_info['title']}' has no quiz questions."
                     )
                     continue
 
-                # Apply type filter
                 if selected_type:
                     filtered = [
                         q for q in all_questions
@@ -246,7 +243,6 @@ with quiz_col:
                     )
                     continue
 
-                # Deduplicate by question text and limit
                 seen: set[str] = set()
                 unique_questions: list[dict] = []
                 for q in filtered:
@@ -282,7 +278,7 @@ with quiz_col:
         if attempt_ids:
             st.session_state["quiz_attempts"] = attempt_ids
             st.session_state["quiz_current_lesson_idx"] = 0
-            st.session_state["quiz_answers"] = {}  # attempt_id → list of answer dicts
+            st.session_state["quiz_answers"] = {}
             st.success(
                 f"Quiz started! {len(attempt_ids)} lesson(s), "
                 f"up to {questions_per_lesson} question(s) each."
@@ -290,3 +286,50 @@ with quiz_col:
             st.switch_page("pages/1_Take_Quiz.py")
         elif not errors:
             st.error("No valid lessons with questions found for the selected configuration.")
+
+# ---------------------------------------------------------------------------
+# Notion — Publication
+# ---------------------------------------------------------------------------
+session_token = st.session_state.get("notion_token")
+session_root  = st.session_state.get("notion_root_page_id") or None
+
+# Affiche la section si token session OU clé .env présente
+if session_token or settings.notion_api_key:
+    st.divider()
+    st.subheader("📄 Publier sur Notion")
+
+    courses_to_publish = {c["title"]: c for c in selected_courses}
+    already_synced = [t for t, c in courses_to_publish.items() if c.get("notion_page_id")]
+
+    if already_synced:
+        st.info(
+            f"Déjà publié : {', '.join(already_synced)}. "
+            "La republication supprimera et recréera automatiquement les pages Notion."
+        )
+
+    if st.button("📤 Publier / Republier sur Notion", use_container_width=False):
+        from tools import manage_notion_page
+
+        for title, course in courses_to_publish.items():
+            try:
+                kwargs: dict = {"action": "publish_course", "course_id": course["id"]}
+
+                # Priorité : token de session > clé .env
+                if session_token:
+                    kwargs["api_key"] = session_token
+                    kwargs["root_page_id"] = session_root
+
+                result = manage_notion_page(**kwargs)
+                action_label = "Republié" if course.get("notion_page_id") else "Publié"
+                st.success(
+                    f"✓ **{title}** — {action_label}, {result['pages_created']} pages créées"
+                )
+            except Exception as e:
+                st.error(f"✗ **{title}** — {e}")
+
+else:
+    st.divider()
+    st.info(
+        "💡 Connectez votre compte Notion pour publier vos cours. "
+        "→ Rendez-vous sur la page **Connexion Notion** dans le menu."
+    )
