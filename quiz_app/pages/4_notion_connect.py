@@ -1,12 +1,12 @@
-"""Page de connexion Notion.
+"""Notion connection page.
 
-Permet à l'utilisateur de renseigner son token Notion et sa page racine
-directement dans l'interface, sans toucher au fichier .env.
+Allows the user to enter their Notion token and root page ID
+directly in the interface, without touching the .env file.
 
-Le token est stocké dans st.session_state["notion_token"] et
-st.session_state["notion_root_page_id"] pour la durée de la session.
+The token is stored in st.session_state["notion_token"] and
+st.session_state["notion_root_page_id"] for the duration of the session.
 
-Placement : quiz_app/pages/4_Notion_Connect.py
+Location: quiz_app/pages/4_Notion_Connect.py
 """
 import sys
 import os
@@ -15,20 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import streamlit as st
 
 
-# ---------------------------------------------------------------------------
-# Fonction de publication
-# ---------------------------------------------------------------------------
-
 def _do_publish(courses: list):
-    """Publie les cours sélectionnés en utilisant le token de session."""
     from tools.notion_tool import manage_notion_page
 
     token = st.session_state["notion_token"]
     root_page_id = st.session_state.get("notion_root_page_id") or None
 
     for course in courses:
-        action_label = "Republication" if course["notion_page_id"] else "Publication"
-        with st.spinner(f"{action_label} de « {course['title']} »..."):
+        action_label = "Republishing" if course["notion_page_id"] else "Publishing"
+        with st.spinner(f"{action_label} '{course['title']}'..."):
             try:
                 result = manage_notion_page(
                     action="publish_course",
@@ -37,15 +32,14 @@ def _do_publish(courses: list):
                     root_page_id=root_page_id,
                 )
                 st.success(
-                    f"✅ **{course['title']}** publié — "
-                    f"{result['pages_created']} pages créées sur Notion."
+                    f"**{course['title']}** published — "
+                    f"{result['pages_created']} pages created on Notion."
                 )
             except Exception as e:
-                st.error(f"❌ Erreur pour « {course['title']} » : {e}")
+                st.error(f"Error for '{course['title']}': {e}")
 
 
 def _publish_section():
-    """Affiche tous les cours et permet de les publier / republier."""
     from database import get_db
     from models import Course
     from sqlalchemy import select
@@ -62,108 +56,112 @@ def _publish_section():
         ]
 
     if not course_list:
-        st.info("Aucun cours en base de données. Créez-en un depuis la page **Créer un cours**.")
+        st.info("No courses in the database. Create one from the **Create a course** page.")
         return
 
-    # Affiche un badge pour les cours déjà publiés
     already_synced = [c for c in course_list if c["notion_page_id"]]
     if already_synced:
         titles = ", ".join(f"**{c['title']}**" for c in already_synced)
         st.info(
-            f"Déjà publiés : {titles}. "
-            "Les republier remplacera automatiquement les pages existantes sur Notion."
+            f"Already published: {titles}. "
+            "Republishing will automatically replace the existing Notion pages."
         )
 
     selected_titles = st.multiselect(
-        "Sélectionnez les cours à publier / republier",
+        "Select courses to publish / republish",
         options=[c["title"] for c in course_list],
         default=[c["title"] for c in course_list],
     )
 
-    if st.button("📤 Publier sur Notion", type="primary", disabled=not selected_titles):
+    if st.button("Publish to Notion", type="primary", disabled=not selected_titles):
         selected = [c for c in course_list if c["title"] in selected_titles]
         _do_publish(selected)
 
 
 # ---------------------------------------------------------------------------
-# Page principale
+# Page layout
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title="Connexion Notion", page_icon="📄", layout="centered")
+st.set_page_config(page_title="Notion Connection", layout="centered")
 
-st.title("📄 Connexion à Notion")
+st.title("Notion Connection")
 st.caption(
-    "Connectez votre compte Notion pour publier vos cours automatiquement. "
-    "Votre token n'est jamais stocké sur nos serveurs — il reste dans votre session navigateur."
+    "Connect your Notion account to publish courses automatically. "
+    "Your token is never stored on our servers — it stays in your browser session."
 )
 
-# ---------------------------------------------------------------------------
-# Statut actuel
-# ---------------------------------------------------------------------------
 is_connected = bool(st.session_state.get("notion_token"))
 
 if is_connected:
     token_val = st.session_state["notion_token"]
     masked = token_val[:10] + "..." + token_val[-4:]
-    st.success(f"✅ Connecté à Notion — `{masked}`")
+    root = st.session_state.get("notion_root_page_id") or "*(workspace root)*"
 
-    with st.expander("Infos de connexion"):
-        st.markdown(f"**Token :** `{masked}`")
-        root = st.session_state.get("notion_root_page_id") or "*(racine du workspace)*"
-        st.markdown(f"**Page racine :** `{root}`")
+    st.success(f"Connected to Notion — `{masked}`")
 
-    if st.button("🔌 Se déconnecter", type="secondary"):
+    with st.expander("Connection details"):
+        st.markdown(f"**Token:** `{masked}`")
+        st.markdown(f"**Root page:** `{root}`")
+
+    if st.button("Disconnect", type="secondary"):
         st.session_state.pop("notion_token", None)
         st.session_state.pop("notion_root_page_id", None)
         st.rerun()
 
     st.divider()
-    st.subheader("Publier un cours sur Notion")
+    st.subheader("Publish a course to Notion")
     _publish_section()
 
 else:
-    # ---------------------------------------------------------------------------
-    # Guide + formulaire de connexion
-    # ---------------------------------------------------------------------------
-    st.subheader("Étape 1 — Créer une intégration Notion")
+    # -------------------------------------------------------------------------
+    # Step 1 — instructions
+    # -------------------------------------------------------------------------
+    st.subheader("Step 1 — Create a Notion integration")
 
-    with st.expander("📖 Comment obtenir mon token Notion ?", expanded=True):
+    with st.expander("How to get my Notion token?", expanded=True):
         st.markdown("""
-**1.** Allez sur [notion.so/my-integrations](https://www.notion.so/my-integrations)
+**1.** Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
 
-**2.** Cliquez **"+ New integration"**, donnez-lui un nom (ex: *Learn AI*) et sélectionnez votre workspace.
+**2.** Click **"+ New integration"**, give it a name (e.g. *Learn AI*) and select your workspace.
 
-**3.** Copiez le **"Internal Integration Secret"** qui commence par `ntn_`
+**3.** Copy the **"Internal Integration Secret"** — it starts with `ntn_`
 
-**4.** Sur la page Notion où vous voulez publier : cliquez **"…"** en haut à droite → **"Add connections"** → sélectionnez votre intégration.
+**4.** In Notion, create an empty page where your courses will be published (e.g. *"Learn AI"*).
+On that page, click **"…"** in the top-right → **"Add connections"** → select your integration.
 
-**5.** Copiez l'ID de cette page depuis son URL :
-`notion.so/Mon-Titre-`**`xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`**
+**5.** Copy the page ID from its URL:
+`notion.so/My-Title-`**`xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`**
 
-> L'ID est la suite de 32 caractères à la fin de l'URL (sans les tirets).
+> The ID is the 32-character string at the end of the URL (without dashes).
+>
+> **This field is required.** Notion internal integrations cannot create pages at the
+> workspace root — they need an existing parent page that has been shared with the integration.
         """)
 
-    st.subheader("Étape 2 — Entrez vos informations")
+    # -------------------------------------------------------------------------
+    # Step 2 — form
+    # -------------------------------------------------------------------------
+    st.subheader("Step 2 — Enter your credentials")
 
     with st.form("notion_connect_form"):
         token_input = st.text_input(
-            "Token d'intégration *",
+            "Integration token *",
             type="password",
             placeholder="ntn_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-            help="Commence par 'ntn_'. Trouvez-le sur notion.so/my-integrations",
+            help="Starts with 'ntn_'. Find it at notion.so/my-integrations.",
         )
 
         root_input = st.text_input(
-            "ID de la page racine (optionnel)",
+            "Root page ID *",
             placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             help=(
-                "L'ID est la partie finale de l'URL de votre page Notion. "
-                "Si laissé vide, les cours seront créés à la racine du workspace."
+                "The 32-character ID at the end of your Notion page URL. "
+                "Required: internal integrations cannot create pages at the workspace root."
             ),
         )
 
         submitted = st.form_submit_button(
-            "🔗 Connecter à Notion",
+            "Connect to Notion",
             type="primary",
             use_container_width=True,
         )
@@ -172,12 +170,24 @@ else:
         token_clean = token_input.strip()
         root_clean = root_input.strip()
 
+        # Validation
+        errors = []
         if not token_clean:
-            st.error("Le token est requis.")
+            errors.append("Integration token is required.")
         elif not (token_clean.startswith("ntn_") or token_clean.startswith("secret_")):
-            st.warning("⚠️ Le token doit commencer par `ntn_` ou `secret_`. Vérifiez votre copie.")
+            errors.append("Token must start with `ntn_` or `secret_`. Check your copy.")
+
+        if not root_clean:
+            errors.append(
+                "Root page ID is required. "
+                "Notion integrations cannot create pages at the workspace root."
+            )
+
+        if errors:
+            for err in errors:
+                st.error(err)
         else:
-            with st.spinner("Vérification du token auprès de Notion..."):
+            with st.spinner("Verifying token with Notion..."):
                 try:
                     from notion_client import Client
                     client = Client(auth=token_clean)
@@ -187,20 +197,20 @@ else:
                     st.session_state["notion_root_page_id"] = root_clean
 
                     name = me.get("name", "")
-                    st.success(f"✅ Connecté{f' en tant que **{name}**' if name else ''} !")
+                    st.success(f"Connected{f' as **{name}**' if name else ''}!")
                     st.rerun()
 
                 except Exception as e:
                     err = str(e).lower()
                     if "401" in err or "unauthorized" in err:
                         st.error(
-                            "❌ Token invalide ou révoqué. "
-                            "Vérifiez votre intégration sur notion.so/my-integrations."
+                            "Invalid or revoked token. "
+                            "Check your integration at notion.so/my-integrations."
                         )
                     elif "404" in err or "object_not_found" in err:
                         st.error(
-                            "❌ Page racine introuvable. "
-                            "Vérifiez l'ID et que votre intégration a bien accès à cette page."
+                            "Root page not found. "
+                            "Check the ID and make sure your integration has access to that page."
                         )
                     else:
-                        st.error(f"❌ Erreur inattendue : {e}")
+                        st.error(f"Unexpected error: {e}")

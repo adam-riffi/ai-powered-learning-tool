@@ -1,11 +1,10 @@
-"""Page de génération de cours.
+"""Course generation page.
 
-Mode unique : Contenu personnel
-L'utilisateur colle du texte ou uploade un PDF,
-l'app structure et génère flashcards + quiz à partir de ce contenu.
-Le nombre de modules et leçons est déterminé automatiquement par l'IA.
+User pastes text or uploads a PDF.
+The app structures the course and generates flashcards + quiz from that content.
+The number of modules and lessons is determined automatically by the model.
 
-Placement : quiz_app/pages/0_Generate.py
+Location: quiz_app/pages/0_Generate.py
 """
 import sys
 import os
@@ -19,48 +18,35 @@ from config import settings
 
 init_db()
 
-st.set_page_config(page_title="Créer un cours", page_icon="✨", layout="wide")
+st.set_page_config(page_title="Create a course", layout="wide")
+st.title("Create a course")
 
-st.title("✨ Créer un cours")
-
-# ---------------------------------------------------------------------------
-# Vérification de la clé Groq
-# ---------------------------------------------------------------------------
 if not settings.groq_api_key:
     st.error(
-        "**GROQ_API_KEY manquant.**\n\n"
-        "Ajoutez votre clé dans le fichier `.env` :\n```\nGROQ_API_KEY=votre_clé_ici\n```\n\n"
-        "Clé gratuite disponible sur [console.groq.com](https://console.groq.com)."
+        "**GROQ_API_KEY missing.**\n\n"
+        "Add your key to the `.env` file:\n```\nGROQ_API_KEY=your_key_here\n```\n\n"
+        "Free key available at [console.groq.com](https://console.groq.com)."
     )
     st.stop()
 
-# ---------------------------------------------------------------------------
-# Seuil au-delà duquel on active le mode chunked
-# 4000 caractères ≈ ~1000 tokens, confortable pour le tier gratuit (12k TPM)
-# ---------------------------------------------------------------------------
+# 4000 chars ~ 1000 tokens, comfortable for the free tier (12k TPM)
 CHUNK_THRESHOLD = 4000
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-level_map = {"Débutant": "beginner", "Intermédiaire": "intermediate", "Avancé": "advanced"}
+level_map = {"Beginner": "beginner", "Intermediate": "intermediate", "Advanced": "advanced"}
 
 
 def extract_pdf_text(uploaded_file) -> str:
-    """Extrait le texte d'un PDF uploadé via Streamlit."""
     try:
         import pypdf
         reader = pypdf.PdfReader(io.BytesIO(uploaded_file.read()))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n\n".join(pages).strip()
     except ImportError:
-        st.error("pypdf n'est pas installé. Lancez : `pip install pypdf`")
+        st.error("pypdf is not installed. Run: `pip install pypdf`")
         st.stop()
 
 
 def run_generation(user_message: str, publish_notion: bool) -> None:
-    """Lance la génération (mode direct) et affiche la progression."""
     _display_generation(
         lambda on_text, on_tool_call, on_tool_result: __import__("agent").run_agent(
             user_message=user_message,
@@ -81,11 +67,10 @@ def run_generation_chunked(
     extra_instructions: str,
     publish_notion: bool,
 ) -> None:
-    """Lance la génération en mode chunked (contenu fourni) et affiche la progression."""
     from agent import run_agent_chunked
 
     st.divider()
-    st.subheader("Progression")
+    st.subheader("Progress")
 
     total_steps = num_modules + 1
     log_lines: list[str] = []
@@ -98,44 +83,37 @@ def run_generation_chunked(
         log_placeholder.markdown("\n".join(log_lines))
 
     def on_text(text: str) -> None:
-        if "Pause de" in text:
+        if "Pause" in text:
             return
-        update_log(f"\n💬 {text}")
+        update_log(f"\n{text}")
 
     def on_tool_call(name: str, args: dict) -> None:
-        icons = {
-            "manage_curriculum": "📚",
-            "manage_flashcards": "🃏",
-            "manage_quiz": "❓",
-            "manage_notion_page": "📄",
-        }
-        icon = icons.get(name, "🔧")
         action = args.get("action", "")
         label = args.get("title") or args.get("lesson_id") or args.get("course_id") or ""
-        update_log(f"{icon} `{name}` → **{action}**{f' — *{label}*' if label else ''}")
+        update_log(f"`{name}` -> **{action}**{f' — *{label}*' if label else ''}")
 
     def on_tool_result(name: str, result: str) -> None:
         try:
             data = json.loads(result)
             if "error" in data:
-                update_log(f"   ✗ `{data['error']}`")
+                update_log(f"   error `{data['error']}`")
             elif "id" in data:
-                update_log(f"   ✓ id={data['id']}")
+                update_log(f"   ok id={data['id']}")
             elif "created" in data:
-                update_log(f"   ✓ {data['created']} éléments créés")
+                update_log(f"   ok {data['created']} items created")
             elif "pages_created" in data:
-                update_log(f"   ✓ {data['pages_created']} pages publiées sur Notion")
+                update_log(f"   ok {data['pages_created']} pages published to Notion")
             else:
-                update_log("   ✓ OK")
+                update_log("   ok")
         except Exception:
-            update_log("   ✓ OK")
+            update_log("   ok")
 
     def on_chunk_start(step: int, total: int) -> None:
         if step == 0:
-            chunk_placeholder.info(f"📐 Étape {step + 1}/{total} — Création de la structure du cours...")
-            status_placeholder.info("⏳ Génération en cours par étapes pour respecter les limites de l'API...")
+            chunk_placeholder.info(f"Step {step + 1}/{total} — Creating course structure...")
+            status_placeholder.info("Generation in progress...")
         else:
-            chunk_placeholder.info(f"📝 Étape {step + 1}/{total} — Génération du module {step}/{total - 1}...")
+            chunk_placeholder.info(f"Step {step + 1}/{total} — Generating module {step}/{total - 1}...")
 
     try:
         final_message = run_agent_chunked(
@@ -153,20 +131,20 @@ def run_generation_chunked(
         )
 
         chunk_placeholder.empty()
-        status_placeholder.success("✅ Cours créé avec succès !")
+        status_placeholder.success("Course created successfully!")
 
         if final_message:
             st.divider()
-            st.subheader("Résumé")
+            st.subheader("Summary")
             st.markdown(final_message)
 
         st.divider()
         col_quiz, col_fc = st.columns(2)
         with col_quiz:
-            if st.button("➡️ Faire le quiz", type="primary", use_container_width=True):
+            if st.button("Take the quiz", type="primary", use_container_width=True):
                 st.switch_page("app.py")
         with col_fc:
-            if st.button("🃏 Étudier les flashcards", use_container_width=True):
+            if st.button("Study flashcards", use_container_width=True):
                 st.switch_page("app.py")
 
     except RuntimeError as e:
@@ -174,14 +152,13 @@ def run_generation_chunked(
         status_placeholder.error(str(e))
     except Exception as e:
         chunk_placeholder.empty()
-        status_placeholder.error(f"Une erreur s'est produite : {e}")
-        update_log(f"\n✗ **Erreur :** {e}")
+        status_placeholder.error(f"An error occurred: {e}")
+        update_log(f"\nerror: {e}")
 
 
 def _display_generation(agent_fn) -> None:
-    """Affiche la progression pour le mode direct."""
     st.divider()
-    st.subheader("Progression")
+    st.subheader("Progress")
 
     log_lines: list[str] = []
     status_placeholder = st.empty()
@@ -192,83 +169,73 @@ def _display_generation(agent_fn) -> None:
         log_placeholder.markdown("\n".join(log_lines))
 
     def on_text(text: str) -> None:
-        update_log(f"\n💬 {text}")
+        update_log(f"\n{text}")
 
     def on_tool_call(name: str, args: dict) -> None:
-        icons = {
-            "manage_curriculum": "📚",
-            "manage_flashcards": "🃏",
-            "manage_quiz": "❓",
-            "manage_notion_page": "📄",
-        }
-        icon = icons.get(name, "🔧")
         action = args.get("action", "")
         label = args.get("title") or args.get("lesson_id") or args.get("course_id") or ""
-        update_log(f"{icon} `{name}` → **{action}**{f' — *{label}*' if label else ''}")
+        update_log(f"`{name}` -> **{action}**{f' — *{label}*' if label else ''}")
 
     def on_tool_result(name: str, result: str) -> None:
         try:
             data = json.loads(result)
             if "error" in data:
-                update_log(f"   ✗ `{data['error']}`")
+                update_log(f"   error `{data['error']}`")
             elif "id" in data:
-                update_log(f"   ✓ id={data['id']}")
+                update_log(f"   ok id={data['id']}")
             elif "created" in data:
-                update_log(f"   ✓ {data['created']} éléments créés")
+                update_log(f"   ok {data['created']} items created")
             elif "pages_created" in data:
-                update_log(f"   ✓ {data['pages_created']} pages publiées sur Notion")
+                update_log(f"   ok {data['pages_created']} pages published to Notion")
             else:
-                update_log("   ✓ OK")
+                update_log("   ok")
         except Exception:
-            update_log("   ✓ OK")
+            update_log("   ok")
 
-    status_placeholder.info("⏳ Génération en cours... (30 à 90 secondes selon la taille du cours)")
+    status_placeholder.info("Generation in progress... (30 to 90 seconds depending on course size)")
 
     try:
         final_message = agent_fn(on_text, on_tool_call, on_tool_result)
-
-        status_placeholder.success("✅ Cours créé avec succès !")
+        status_placeholder.success("Course created successfully!")
 
         if final_message:
             st.divider()
-            st.subheader("Résumé")
+            st.subheader("Summary")
             st.markdown(final_message)
 
         st.divider()
         col_quiz, col_fc = st.columns(2)
         with col_quiz:
-            if st.button("➡️ Faire le quiz", type="primary", use_container_width=True):
+            if st.button("Take the quiz", type="primary", use_container_width=True):
                 st.switch_page("app.py")
         with col_fc:
-            if st.button("🃏 Étudier les flashcards", use_container_width=True):
+            if st.button("Study flashcards", use_container_width=True):
                 st.switch_page("app.py")
 
     except RuntimeError as e:
         status_placeholder.error(str(e))
     except Exception as e:
-        status_placeholder.error(f"Une erreur s'est produite : {e}")
-        update_log(f"\n✗ **Erreur :** {e}")
+        status_placeholder.error(f"An error occurred: {e}")
+        update_log(f"\nerror: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Page principale — Mode contenu personnel uniquement
-# ---------------------------------------------------------------------------
-st.caption("Collez votre contenu ou uploadez un PDF. L'app structure le cours et génère les flashcards et quiz.")
+# --- Main form ---
+
+st.caption("Paste your content or upload a PDF. The app structures the course and generates flashcards and quiz.")
 
 course_title = st.text_input(
-    "Titre du cours *",
-    placeholder="ex: Cours de thermodynamique",
+    "Course title *",
+    placeholder="e.g. Thermodynamics course",
     key="course_title_content",
 )
 level_c = st.selectbox(
-    "Niveau",
-    options=["Débutant", "Intermédiaire", "Avancé"],
+    "Level",
+    options=["Beginner", "Intermediate", "Advanced"],
     key="level_content",
 )
-
 input_method = st.radio(
-    "Comment fournir le contenu ?",
-    options=["Coller du texte", "Uploader un PDF"],
+    "How to provide content?",
+    options=["Paste text", "Upload PDF"],
     horizontal=True,
     key="input_method_content",
 )
@@ -276,70 +243,59 @@ input_method = st.radio(
 pasted_text = ""
 uploaded_pdf = None
 
-if input_method == "Coller du texte":
+if input_method == "Paste text":
     pasted_text = st.text_area(
-        "Contenu du cours *",
-        placeholder="Collez ici vos notes, slides, ou tout autre contenu...",
+        "Course content *",
+        placeholder="Paste your notes, slides, or any other content here...",
         height=300,
         key="pasted_text_content",
     )
 else:
-    uploaded_pdf = st.file_uploader(
-        "Fichier PDF *",
-        type=["pdf"],
-        key="pdf_uploader_content",
-    )
+    uploaded_pdf = st.file_uploader("PDF file *", type=["pdf"], key="pdf_uploader_content")
 
 extra_c = st.text_area(
-    "Instructions supplémentaires (optionnel)",
-    placeholder="ex: insiste sur les formules, ajoute des exemples pratiques...",
+    "Additional instructions (optional)",
+    placeholder="e.g. focus on formulas, add practical examples...",
     height=80,
     key="extra_content",
 )
-
 publish_notion_c = st.checkbox(
-    "Publier sur Notion après génération",
+    "Publish to Notion after generation",
     value=False,
     disabled=not settings.notion_api_key,
     key="notion_content",
 )
-
-launch_content = st.button("🚀 Lancer", type="primary", use_container_width=True, key="launch_content")
+launch_content = st.button("Launch", type="primary", use_container_width=True, key="launch_content")
 
 if launch_content:
     if not course_title.strip():
-        st.warning("Veuillez renseigner le titre du cours.")
+        st.warning("Please enter a course title.")
         st.stop()
 
-    # ── Récupération du contenu brut ─────────────────────────────────────
     raw_content = ""
-    if input_method == "Coller du texte":
+    if input_method == "Paste text":
         if not pasted_text.strip():
-            st.warning("Veuillez coller du contenu.")
+            st.warning("Please paste some content.")
             st.stop()
         raw_content = pasted_text.strip()
     else:
         if uploaded_pdf is None:
-            st.warning("Veuillez uploader un fichier PDF.")
+            st.warning("Please upload a PDF file.")
             st.stop()
-        with st.spinner("Extraction du texte PDF..."):
+        with st.spinner("Extracting PDF text..."):
             raw_content = extract_pdf_text(uploaded_pdf)
         if not raw_content:
-            st.error("Impossible d'extraire du texte de ce PDF.")
+            st.error("Could not extract text from this PDF.")
             st.stop()
 
-    # ── Choix du mode : direct ou chunked ────────────────────────────────
     if len(raw_content) > CHUNK_THRESHOLD:
-        # Contenu trop grand → mode chunked (1 appel API par module)
-        # Le nombre de modules et leçons est déterminé automatiquement selon la taille du contenu
         nb_chars = len(raw_content)
-        # Estimation automatique : ~1 module par tranche de 3000 caractères, entre 2 et 5 modules
         auto_modules = max(2, min(5, nb_chars // 3000))
-        auto_lessons = 2  # valeur par défaut raisonnable
+        auto_lessons = 2
         st.info(
-            f"📄 Contenu détecté : **{nb_chars:,} caractères**. "
-            f"Génération en **{auto_modules + 1} étapes** pour respecter les limites de l'API "
-            f"(~1 minute d'attente entre chaque étape)."
+            f"Content detected: **{nb_chars:,} characters**. "
+            f"Generation in **{auto_modules + 1} steps** to respect API limits "
+            f"(~1 minute wait between each step)."
         )
         run_generation_chunked(
             content=raw_content,
@@ -351,19 +307,16 @@ if launch_content:
             publish_notion=publish_notion_c,
         )
     else:
-        # Contenu court → mode direct (un seul appel)
-        # L'IA détermine elle-même la structure optimale
         user_message = (
-            f"Crée un cours structuré intitulé : \"{course_title.strip()}\".\n"
-            f"Niveau : {level_c} ({level_map[level_c]}).\n"
-            f"Analyse le contenu fourni et détermine toi-même le nombre optimal de modules et leçons "
-            f"en fonction de la quantité et de la nature du contenu. "
-            f"Base-toi UNIQUEMENT sur le contenu fourni ci-dessous pour rédiger les leçons, "
-            f"les flashcards et les questions de quiz. "
-            f"Ne complète pas avec des informations externes.\n"
+            f"Create a structured course titled: \"{course_title.strip()}\".\n"
+            f"Level: {level_c} ({level_map[level_c]}).\n"
+            f"Analyse the provided content and determine yourself the optimal number of modules and lessons "
+            f"based on the quantity and nature of the content. "
+            f"Base yourself ONLY on the content provided below for lessons, flashcards and quiz questions. "
+            f"Do not supplement with external information.\n"
         )
         if extra_c.strip():
-            user_message += f"Instructions supplémentaires : {extra_c.strip()}\n"
-        user_message += f"\n--- CONTENU ---\n{raw_content}\n--- FIN DU CONTENU ---"
+            user_message += f"Additional instructions: {extra_c.strip()}\n"
+        user_message += f"\n--- CONTENT ---\n{raw_content}\n--- END CONTENT ---"
 
         run_generation(user_message, publish_notion_c)
