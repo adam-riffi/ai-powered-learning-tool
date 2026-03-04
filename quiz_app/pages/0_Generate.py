@@ -19,7 +19,7 @@ from auth_guard import require_auth, render_sidebar_user, current_user_id
 
 init_db()
 
-st.set_page_config(page_title="Create a course", layout="wide")
+st.set_page_config(page_title="Learnly — Create a course", layout="wide")
 
 require_auth()
 render_sidebar_user()
@@ -52,45 +52,53 @@ def extract_pdf_text(uploaded_file) -> str:
 
 def _display_generation(agent_fn) -> None:
     st.divider()
-    st.subheader("Progress")
 
-    log_lines: list[str] = []
     status_placeholder = st.empty()
-    log_placeholder = st.empty()
+    progress_placeholder = st.empty()
 
-    def update_log(line: str) -> None:
-        log_lines.append(line)
-        log_placeholder.markdown("\n".join(log_lines))
+    current_module: dict = {"label": "", "index": 0, "total": 0}
 
     def on_text(text: str) -> None:
-        update_log(f"\n{text}")
+        # Try to extract total module count from the agent's summary line
+        if "module(s)" in text and "—" in text:
+            try:
+                total = int(text.split("module(s)")[0].split()[-1])
+                current_module["total"] = total
+            except (ValueError, IndexError):
+                pass
 
     def on_tool_call(name: str, args: dict) -> None:
         action = args.get("action", "")
-        label = args.get("title") or args.get("lesson_id") or args.get("course_id") or ""
-        update_log(f"`{name}` -> **{action}**{f' — *{label}*' if label else ''}")
+
+        if action == "create_course":
+            title = args.get("title", "")
+            status_placeholder.info(f"⏳ Setting up course **{title}**...")
+
+        elif action == "add_module":
+            current_module["label"] = args.get("title", "")
+            current_module["index"] += 1
+            idx = current_module["index"]
+            total = current_module["total"]
+            label = current_module["label"]
+            if total:
+                status_placeholder.info(f"⏳ Module {idx}/{total}: **{label}**")
+            else:
+                status_placeholder.info(f"⏳ Module: **{label}**")
+            progress_placeholder.empty()
+
+        elif action == "add_lesson":
+            lesson = args.get("title") or args.get("objective", "")
+            progress_placeholder.caption(f"Generating lesson: *{lesson}*")
 
     def on_tool_result(name: str, result: str) -> None:
-        try:
-            data = json.loads(result)
-            if "error" in data:
-                update_log(f"   error `{data['error']}`")
-            elif "id" in data:
-                update_log(f"   ok id={data['id']}")
-            elif "created" in data:
-                update_log(f"   ok {data['created']} items created")
-            elif "pages_created" in data:
-                update_log(f"   ok {data['pages_created']} pages published to Notion")
-            else:
-                update_log("   ok")
-        except Exception:
-            update_log("   ok")
+        pass  # Raw tool results are not shown to the user
 
-    status_placeholder.info("Generation in progress... (30 to 90 seconds depending on course size)")
+    status_placeholder.info("⏳ Generation in progress... (30–90 seconds depending on course size)")
 
     try:
         final_message = agent_fn(on_text, on_tool_call, on_tool_result)
-        status_placeholder.success("Course created successfully!")
+        progress_placeholder.empty()
+        status_placeholder.success("✅ Course created successfully!")
 
         if final_message:
             st.divider()
@@ -107,10 +115,11 @@ def _display_generation(agent_fn) -> None:
                 st.switch_page("app.py")
 
     except RuntimeError as e:
+        progress_placeholder.empty()
         status_placeholder.error(str(e))
     except Exception as e:
+        progress_placeholder.empty()
         status_placeholder.error(f"An error occurred: {e}")
-        update_log(f"\nerror: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +176,6 @@ if launch_content:
         st.warning("Please enter a course title.")
         st.stop()
 
-    # Capture user_id immediately when button is clicked
     uid = current_user_id()
     if not uid:
         st.error("Session expired. Please log in again.")

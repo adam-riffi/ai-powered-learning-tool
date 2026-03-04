@@ -16,12 +16,12 @@ from auth_guard import require_auth, render_sidebar_user, current_user_id
 
 init_db()
 
-st.set_page_config(page_title="Learn AI", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="Learnly", page_icon="📚", layout="wide")
 
 require_auth()
 render_sidebar_user()
 
-st.title("🎓 Learning Assistant")
+st.title("📚 Learnly")
 st.caption("Select lessons, then start a quiz or study flashcards.")
 
 # ---------------------------------------------------------------------------
