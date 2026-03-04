@@ -1,4 +1,4 @@
-"""Application configuration loaded from .env file."""
+"""Application configuration loaded from environment variables."""
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./learn_ai.db"
 
-    # Groq (required for the agent)
+    # Groq (required for the generation engine)
     groq_api_key: Optional[str] = None
     groq_model: str = "llama3-70b-8192"
 
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     notion_root_page_id: Optional[str] = None
 
     # Application
-    app_env: str = "development"
+    app_env: str = "production"
     log_level: str = "INFO"
 
     @property

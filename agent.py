@@ -4,14 +4,10 @@ Receives a user request, calls curriculum management tools,
 and returns a summary of what was created.
 
 Used by quiz_app/pages/0_Generate.py
-
-Terminal usage:
-    python agent.py "Create a Python basics course for beginners"
 """
 from __future__ import annotations
 
 import json
-import sys
 import time
 from pathlib import Path
 from typing import Callable
@@ -203,49 +199,42 @@ def _analyze_course_structure(content: str, course_title: str, level: str) -> di
 
     raw = _llm_json(
         system=(
-            "You are an expert in instructional design. "
-            "You analyse course content and propose an optimal structure. "
-            "Respond ONLY with valid JSON, no explanation."
+            "You are an expert instructional designer. "
+            "Respond ONLY with valid JSON, no markdown wrapping."
         ),
         prompt=(
-            f"Analyse this content for a course titled \"{course_title}\" (level: {level}).\n"
+            f"Analyze this content and propose a course structure for \"{course_title}\" "
+            f"at {level} level.\n\n"
             f"{hint}\n\n"
-            f"Respond ONLY with this JSON (no markdown, no explanation):\n"
-            f'{{"modules": [{{"title": "Module title", "num_lessons": 2}}]}}\n\n'
-            f"Rules:\n"
-            f"- Module titles must reflect the main themes of the content\n"
-            f"- num_lessons between 1 and 3 based on content density\n"
-            f"- Maximum 5 modules total\n\n"
-            f"Content:\n{content_preview}"
+            f"Respond ONLY with this JSON format:\n"
+            f'{{"modules": [{{"title": "Module name", "num_lessons": 2, "focus": "Key topic"}}]}}\n\n'
+            f"Content preview:\n{content_preview}"
         ),
         max_tokens=600,
     )
 
     try:
-        data = json.loads(raw)
-        modules = data.get("modules", [])
-        if isinstance(modules, list) and modules:
-            result = []
-            for m in modules[:5]:
-                if isinstance(m, dict) and "title" in m:
-                    result.append({
-                        "title": str(m["title"]),
-                        "num_lessons": max(1, min(3, int(m.get("num_lessons", 2)))),
-                    })
-            if result:
-                return {"modules": result}
-    except (json.JSONDecodeError, ValueError, TypeError):
+        structure = json.loads(raw)
+        if "modules" in structure and isinstance(structure["modules"], list):
+            return structure
+    except json.JSONDecodeError:
         pass
 
-    if nb_chars < 2000:
-        return {"modules": [{"title": course_title, "num_lessons": 2}]}
-    elif nb_chars < 5000:
-        return {"modules": [
-            {"title": f"Part 1 — {course_title}", "num_lessons": 2},
-            {"title": f"Part 2 — {course_title}", "num_lessons": 2},
-        ]}
-    else:
-        return {"modules": [{"title": f"Module {i + 1}", "num_lessons": 2} for i in range(3)]}
+    return {"modules": [{"title": course_title, "num_lessons": 2, "focus": course_title}]}
+
+
+def _split_into_chunks(content: str, num_chunks: int) -> list[str]:
+    """Split content into roughly equal chunks for parallel module generation."""
+    if num_chunks <= 1:
+        return [content]
+    chunk_size = max(len(content) // num_chunks, 500)
+    chunks = []
+    start = 0
+    for i in range(num_chunks):
+        end = start + chunk_size if i < num_chunks - 1 else len(content)
+        chunks.append(content[start:end])
+        start = end
+    return chunks
 
 
 def _generate_lesson_content(
@@ -257,7 +246,7 @@ def _generate_lesson_content(
     extra: str,
     pause: float,
 ) -> dict:
-    """Generate lesson content as plain markdown using text separators to avoid nested JSON issues."""
+    """Generate structured lesson content from a content chunk."""
     time.sleep(pause)
 
     client = Groq(api_key=settings.groq_api_key)
@@ -357,16 +346,15 @@ def _generate_quiz(lesson_title: str, lesson_content: str, pause: float) -> list
         prompt=(
             f"Generate 3 MCQ questions for the lesson \"{lesson_title}\".\n\n"
             f"Respond ONLY with a JSON array:\n"
-            f'[{{"question": "Clear question?", '
-            f'"options": ["Option A", "Option B", "Option C", "Option D"], '
-            f'"correct_answer": "Option A", "type": "single"}}]\n\n'
+            f'[{{"question": "Clear question?", "options": ["A", "B", "C", "D"], '
+            f'"correct_answer": "A", "type": "single"}}]\n\n'
             f"Rules:\n"
-            f"- Questions test real comprehension of the content\n"
-            f"- correct_answer must be EXACTLY one of the options\n"
-            f"- Distractors (wrong answers) must be plausible\n\n"
+            f"- Questions must test understanding, not memorization\n"
+            f"- All 4 options must be plausible\n"
+            f"- correct_answer must exactly match one of the options\n\n"
             f"Based on:\n{lesson_content[:2000]}"
         ),
-        max_tokens=900,
+        max_tokens=800,
     )
     try:
         questions = json.loads(raw)
@@ -377,50 +365,22 @@ def _generate_quiz(lesson_title: str, lesson_content: str, pause: float) -> list
     return []
 
 
-def _split_into_chunks(content: str, num_chunks: int) -> list[str]:
-    if num_chunks <= 1:
-        return [content]
-    chunk_size = len(content) // num_chunks
-    chunks = []
-    start = 0
-    for i in range(num_chunks):
-        if i == num_chunks - 1:
-            chunks.append(content[start:].strip())
-            break
-        end = start + chunk_size
-        newline_pos = content.find("\n\n", end)
-        if newline_pos != -1 and newline_pos < end + 800:
-            end = newline_pos
-        else:
-            newline_pos = content.find("\n", end)
-            if newline_pos != -1 and newline_pos < end + 200:
-                end = newline_pos
-        chunks.append(content[start:end].strip())
-        start = end
-    return [c for c in chunks if c]
-
-
 def run_agent_chunked(
     content: str,
     course_title: str,
-    level: str,
-    num_modules: int,
-    num_lessons: int,
+    level: str = "beginner",
+    num_modules: int = 2,
+    num_lessons: int = 2,
     extra_instructions: str = "",
     on_text: Callable[[str], None] | None = None,
     on_tool_call: Callable[[str, dict], None] | None = None,
     on_tool_result: Callable[[str, str], None] | None = None,
     on_chunk_start: Callable[[int, int], None] | None = None,
     publish_to_notion: bool = False,
-    pause_between_chunks: float = 12.0,
     user_id: str | None = None,
+    pause_between_chunks: float = 1.5,
 ) -> str:
-    """
-    Generate a course deterministically:
-    - Auto-analyses content to define optimal structure
-    - Creates course + modules directly via manage_curriculum
-    - Generates content (lessons, flashcards, quiz) via direct LLM JSON calls
-    """
+    """Process a course creation request from raw content (chunked mode)."""
     if not settings.groq_api_key:
         raise RuntimeError("GROQ_API_KEY is not set.")
 
@@ -587,33 +547,3 @@ def run_agent_chunked(
     )
     notify(summary)
     return summary
-
-
-if __name__ == "__main__":
-    prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else (
-        "Create an introduction to Python course for beginners "
-        "with 2 modules and 2 lessons per module."
-    )
-
-    print(f"\nStarting: {prompt}\n{'─' * 60}")
-
-    def on_text(text: str) -> None:
-        print(f"\n{text}")
-
-    def on_tool_call(name: str, args: dict) -> None:
-        print(f"  -> {name}({args.get('action', '')})")
-
-    def on_tool_result(name: str, result: str) -> None:
-        try:
-            data = json.loads(result)
-            if "id" in data:
-                print(f"     ok id={data['id']}")
-            elif "created" in data:
-                print(f"     ok {data['created']} items created")
-            elif "error" in data:
-                print(f"     error {data['error']}")
-        except Exception:
-            print("     ok")
-
-    run_agent(prompt, on_text=on_text, on_tool_call=on_tool_call, on_tool_result=on_tool_result)
-    print(f"\n{'─' * 60}\nDone.")
