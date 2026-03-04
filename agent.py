@@ -413,6 +413,7 @@ def run_agent_chunked(
     on_chunk_start: Callable[[int, int], None] | None = None,
     publish_to_notion: bool = False,
     pause_between_chunks: float = 12.0,
+    user_id: str | None = None,
 ) -> str:
     """
     Generate a course deterministically:
@@ -453,6 +454,7 @@ def run_agent_chunked(
         level=level,
         goal=f"Master the concepts of {course_title}",
         hours_per_week=5,
+        user_id=user_id,
     )
 
     if on_tool_result:
@@ -553,7 +555,7 @@ def run_agent_chunked(
             if cards:
                 if on_tool_call:
                     on_tool_call("manage_flashcards", {"action": "create", "lesson_id": lesson_id})
-                fc_result = manage_flashcards(action="create", lesson_id=lesson_id, cards=cards)
+                fc_result = manage_flashcards(action="create", lesson_id=lesson_id, cards=cards, user_id=user_id)
                 if on_tool_result:
                     on_tool_result("manage_flashcards", json.dumps(fc_result))
 
@@ -565,7 +567,7 @@ def run_agent_chunked(
             if questions:
                 if on_tool_call:
                     on_tool_call("manage_quiz", {"action": "create", "lesson_id": lesson_id})
-                quiz_result = manage_quiz(action="create", lesson_id=lesson_id, questions=questions)
+                quiz_result = manage_quiz(action="create", lesson_id=lesson_id, questions=questions, user_id=user_id)
                 if on_tool_result:
                     on_tool_result("manage_quiz", json.dumps(quiz_result))
 

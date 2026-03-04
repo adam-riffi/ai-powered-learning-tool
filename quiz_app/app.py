@@ -12,7 +12,7 @@ from database import init_db, get_db
 from models import Course, Module, Lesson, QuizAttempt
 from sqlalchemy import select
 from config import settings
-from auth_guard import require_auth, render_sidebar_user
+from auth_guard import require_auth, render_sidebar_user, current_user_id
 
 init_db()
 
@@ -40,7 +40,11 @@ if st.session_state.get("notion_token"):
 # Load all courses
 # ---------------------------------------------------------------------------
 with get_db() as db:
-    courses = db.scalars(select(Course).order_by(Course.title)).all()
+    stmt = select(Course).order_by(Course.title)
+    uid = current_user_id()
+    if uid:
+        stmt = stmt.where(Course.user_id == uid)
+    courses = db.scalars(stmt).all()
     course_data = []
     for course in courses:
         modules_data = []

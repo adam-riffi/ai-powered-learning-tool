@@ -24,6 +24,7 @@ from models import Course, CourseLevel, CourseStatus, Lesson, Module
 def _course_to_dict(course: Course) -> dict:
     return {
         "id": course.id,
+        "user_id": course.user_id,
         "title": course.title,
         "topic": course.topic,
         "level": course.level.value,
@@ -88,7 +89,8 @@ def manage_curriculum(action: str, **kwargs: Any) -> dict:
     Actions
     -------
     create_course
-        Required: title (str), topic (str), level (str: beginner/intermediate/advanced),
+        Required: user_id (str — UUID), title (str), topic (str),
+                  level (str: beginner/intermediate/advanced),
                   goal (str), hours_per_week (int)
         Returns:  course dict
 
@@ -113,7 +115,7 @@ def manage_curriculum(action: str, **kwargs: Any) -> dict:
         Returns:  full tree — course → modules → lessons (with flashcard count)
 
     list_courses
-        No parameters.
+        Optional: user_id (str) — filter to courses belonging to this user.
         Returns:  list of course summary dicts
 
     delete_course
@@ -138,7 +140,7 @@ def manage_curriculum(action: str, **kwargs: Any) -> dict:
     elif action == "get_course":
         return _get_course(**kwargs)
     elif action == "list_courses":
-        return _list_courses()
+        return _list_courses(**kwargs)
     elif action == "delete_course":
         return _delete_course(**kwargs)
     elif action == "search_lessons":
@@ -155,6 +157,7 @@ def manage_curriculum(action: str, **kwargs: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 def _create_course(
+    user_id: str,
     title: str,
     topic: str,
     level: str,
@@ -162,6 +165,8 @@ def _create_course(
     hours_per_week: int,
     **_: Any,
 ) -> dict:
+    if not user_id:
+        raise ValueError("'user_id' is required")
     try:
         course_level = CourseLevel(level.lower())
     except ValueError:
@@ -169,6 +174,7 @@ def _create_course(
 
     with get_db() as db:
         course = Course(
+            user_id=user_id,
             title=title,
             topic=topic,
             level=course_level,
@@ -251,10 +257,12 @@ def _update_lesson(lesson_id: int, **kwargs: Any) -> dict:
     return result
 
 
-def _get_course(course_id: int, **_: Any) -> dict:
+def _get_course(course_id: int, user_id: Optional[str] = None, **_: Any) -> dict:
     with get_db() as db:
         course = db.get(Course, int(course_id))
         if not course:
+            raise ValueError(f"Course {course_id} not found")
+        if user_id and course.user_id != user_id:
             raise ValueError(f"Course {course_id} not found")
 
         result = _course_to_dict(course)
@@ -273,9 +281,12 @@ def _get_course(course_id: int, **_: Any) -> dict:
     return result
 
 
-def _list_courses(**_: Any) -> dict:
+def _list_courses(user_id: Optional[str] = None, **_: Any) -> dict:
     with get_db() as db:
-        courses = db.scalars(select(Course).order_by(Course.created_at.desc())).all()
+        stmt = select(Course).order_by(Course.created_at.desc())
+        if user_id:
+            stmt = stmt.where(Course.user_id == user_id)
+        courses = db.scalars(stmt).all()
         result = []
         for course in courses:
             summary = _course_to_dict(course)
@@ -285,21 +296,29 @@ def _list_courses(**_: Any) -> dict:
     return {"courses": result, "total": len(result)}
 
 
-def _delete_course(course_id: int, **_: Any) -> dict:
+def _delete_course(course_id: int, user_id: Optional[str] = None, **_: Any) -> dict:
     with get_db() as db:
         course = db.get(Course, int(course_id))
         if not course:
+            raise ValueError(f"Course {course_id} not found")
+        if user_id and course.user_id != user_id:
             raise ValueError(f"Course {course_id} not found")
         db.delete(course)
     return {"deleted": True, "course_id": int(course_id)}
 
 
-def _search_lessons(query: str, course_id: Optional[int] = None, **_: Any) -> dict:
+def _search_lessons(
+    query: str,
+    course_id: Optional[int] = None,
+    user_id: Optional[str] = None,
+    **_: Any,
+) -> dict:
     term = f"%{query}%"
     with get_db() as db:
         stmt = (
             select(Lesson)
             .join(Module)
+            .join(Course, Module.course_id == Course.id)
             .where(
                 or_(
                     Lesson.title.ilike(term),
@@ -310,6 +329,8 @@ def _search_lessons(query: str, course_id: Optional[int] = None, **_: Any) -> di
         )
         if course_id is not None:
             stmt = stmt.where(Module.course_id == int(course_id))
+        if user_id:
+            stmt = stmt.where(Course.user_id == user_id)
 
         lessons = db.scalars(stmt).all()
 

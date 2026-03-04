@@ -48,13 +48,19 @@ class Course(Base):
     __tablename__ = "courses"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     topic: Mapped[str] = mapped_column(String(255), nullable=False)
-    level: Mapped[CourseLevel] = mapped_column(SAEnum(CourseLevel), nullable=False)
+    level: Mapped[CourseLevel] = mapped_column(
+        SAEnum(CourseLevel, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     hours_per_week: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[CourseStatus] = mapped_column(
-        SAEnum(CourseStatus), default=CourseStatus.DRAFT, nullable=False
+        SAEnum(CourseStatus, values_callable=lambda x: [e.value for e in x]),
+        default=CourseStatus.DRAFT,
+        nullable=False,
     )
 
     # Notion sync metadata
@@ -109,8 +115,8 @@ class Lesson(Base):
     module_id: Mapped[int] = mapped_column(ForeignKey("modules.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     objective: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Markdown
-    tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)    # e.g. ["python", "loops"]
+    content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notion_page_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

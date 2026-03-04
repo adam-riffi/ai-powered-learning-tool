@@ -43,6 +43,7 @@ def load_user_from_callback() -> None:
         from auth import exchange_code_for_user
         user: UserSession = exchange_code_for_user(provider, code)
         st.session_state["user"] = user
+        st.session_state["user_id"] = user.id
     except Exception as exc:
         st.session_state["oauth_error"] = str(exc)
     finally:
@@ -55,8 +56,7 @@ def current_user() -> UserSession | None:
 
 def current_user_id() -> str | None:
     """Return the logged-in user's ID, or None. Used by tools to filter data."""
-    user = st.session_state.get("user")
-    return user.id if user else None
+    return st.session_state.get("user_id")
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,8 @@ def current_user_id() -> str | None:
 
 def require_auth() -> None:
     """
-    Stop page rendering and show login buttons if no user is in session.
+    Redirect to the login page if no user is in session.
+    If an OAuth callback is in progress, process it first before redirecting.
     Call this at the top of every protected page.
     """
     load_user_from_callback()
@@ -74,9 +75,10 @@ def require_auth() -> None:
         st.error(f"Authentication error: {st.session_state.pop('oauth_error')}")
 
     if not st.session_state.get("user"):
-        st.warning("You must be logged in to access this page.")
-        _render_login_buttons()
-        st.stop()
+        if st.query_params.get("code"):
+            st.spinner("Connexion en cours...")
+            st.rerun()
+        st.switch_page("pages/5_Login.py")
 
 
 # ---------------------------------------------------------------------------

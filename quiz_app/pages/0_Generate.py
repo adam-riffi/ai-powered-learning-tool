@@ -15,7 +15,7 @@ import io
 import streamlit as st
 from database import init_db
 from config import settings
-from auth_guard import require_auth, render_sidebar_user
+from auth_guard import require_auth, render_sidebar_user, current_user_id
 
 init_db()
 
@@ -167,6 +167,12 @@ if launch_content:
         st.warning("Please enter a course title.")
         st.stop()
 
+    # Capture user_id immediately when button is clicked
+    uid = current_user_id()
+    if not uid:
+        st.error("Session expired. Please log in again.")
+        st.stop()
+
     raw_content = ""
     if input_method == "Paste text":
         if not pasted_text.strip():
@@ -186,7 +192,6 @@ if launch_content:
     if len(raw_content) > CHUNK_THRESHOLD:
         nb_chars = len(raw_content)
         auto_modules = max(2, min(5, nb_chars // 3000))
-        auto_lessons = 2
         st.info(
             f"Content detected: **{nb_chars:,} characters**. "
             f"Generation in **{auto_modules + 1} steps** to respect API limits "
@@ -207,6 +212,7 @@ if launch_content:
             on_tool_call=on_tool_call,
             on_tool_result=on_tool_result,
             publish_to_notion=publish_notion_c,
+            user_id=uid,
         )
 
     _display_generation(_run)

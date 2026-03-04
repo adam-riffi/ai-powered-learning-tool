@@ -23,7 +23,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 
 from database import get_db
-from models import Lesson, QuizAttempt
+from models import Course, Lesson, Module, QuizAttempt
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ def manage_quiz(action: str, **kwargs: Any) -> dict:
     Actions
     -------
     create
-        Required: lesson_id (int),
+        Required: user_id (str — UUID), lesson_id (int),
                   questions (list[dict]) — each question dict:
                     {
                       "question": "What is X?",
@@ -98,6 +98,7 @@ def manage_quiz(action: str, **kwargs: Any) -> dict:
 
     list
         Required: lesson_id (int)
+        Optional: user_id (str) — filter to attempts belonging to this user's courses.
         Returns:  {"attempts": [...], "total": <count>}  (summary, no questions)
 
     results
@@ -127,17 +128,25 @@ def manage_quiz(action: str, **kwargs: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 def _create(
+    user_id: str,
     lesson_id: int,
     questions: list,
     max_score: Optional[float] = None,
     **_: Any,
 ) -> dict:
+    if not user_id:
+        raise ValueError("'user_id' is required")
     if not questions:
         raise ValueError("'questions' must be a non-empty list")
 
     with get_db() as db:
         lesson = db.get(Lesson, int(lesson_id))
         if not lesson:
+            raise ValueError(f"Lesson {lesson_id} not found")
+        # Verify lesson belongs to the user via Module → Course
+        module = db.get(Module, lesson.module_id)
+        course = db.get(Course, module.course_id) if module else None
+        if not course or course.user_id != user_id:
             raise ValueError(f"Lesson {lesson_id} not found")
 
         # Default: 10 points per question
@@ -203,13 +212,18 @@ def _get(attempt_id: int, **_: Any) -> dict:
     return result
 
 
-def _list(lesson_id: int, **_: Any) -> dict:
+def _list(lesson_id: int, user_id: Optional[str] = None, **_: Any) -> dict:
     with get_db() as db:
         stmt = (
             select(QuizAttempt)
+            .join(Lesson, QuizAttempt.lesson_id == Lesson.id)
+            .join(Module, Lesson.module_id == Module.id)
+            .join(Course, Module.course_id == Course.id)
             .where(QuizAttempt.lesson_id == int(lesson_id))
             .order_by(QuizAttempt.created_at.desc())
         )
+        if user_id:
+            stmt = stmt.where(Course.user_id == user_id)
         attempts = db.scalars(stmt).all()
         results = [_attempt_to_dict(a, include_questions=False) for a in attempts]
     return {"attempts": results, "total": len(results)}

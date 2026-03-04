@@ -45,14 +45,15 @@ def manage_flashcards(action: str, **kwargs: Any) -> dict:
     Actions
     -------
     create
-        Required: lesson_id (int),
+        Required: user_id (str — UUID), lesson_id (int),
                   cards (list[dict]) — each dict must have "front" and "back" (str).
                                        Optional "tags" (list[str]) per card.
         Returns:  {"flashcards": [...], "created": <count>}
 
     list
         Required: lesson_id (int) OR course_id (int) — at least one must be provided.
-        Optional: tags (list[str]) — filter by tag (card must have ALL listed tags)
+        Optional: user_id (str) — filter to cards belonging to this user's courses.
+                  tags (list[str]) — filter by tag (card must have ALL listed tags)
         Returns:  {"flashcards": [...], "total": <count>}
 
     get
@@ -85,13 +86,20 @@ def manage_flashcards(action: str, **kwargs: Any) -> dict:
 # Action implementations
 # ---------------------------------------------------------------------------
 
-def _create(lesson_id: int, cards: list, **_: Any) -> dict:
+def _create(user_id: str, lesson_id: int, cards: list, **_: Any) -> dict:
+    if not user_id:
+        raise ValueError("'user_id' is required")
     if not cards:
         raise ValueError("'cards' must be a non-empty list")
 
     with get_db() as db:
         lesson = db.get(Lesson, int(lesson_id))
         if not lesson:
+            raise ValueError(f"Lesson {lesson_id} not found")
+        # Verify lesson belongs to the user via Module → Course
+        module = db.get(Module, lesson.module_id)
+        course = db.get(Course, module.course_id) if module else None
+        if not course or course.user_id != user_id:
             raise ValueError(f"Lesson {lesson_id} not found")
 
         created = []
@@ -114,6 +122,7 @@ def _create(lesson_id: int, cards: list, **_: Any) -> dict:
 def _list(
     lesson_id: Optional[int] = None,
     course_id: Optional[int] = None,
+    user_id: Optional[str] = None,
     tags: Optional[list] = None,
     **_: Any,
 ) -> dict:
@@ -121,16 +130,19 @@ def _list(
         raise ValueError("Provide at least one of: lesson_id, course_id")
 
     with get_db() as db:
+        # Always join up to Course to enable user_id filtering
+        stmt = (
+            select(Flashcard)
+            .join(Lesson, Flashcard.lesson_id == Lesson.id)
+            .join(Module, Lesson.module_id == Module.id)
+            .join(Course, Module.course_id == Course.id)
+        )
         if lesson_id is not None:
-            stmt = select(Flashcard).where(Flashcard.lesson_id == int(lesson_id))
+            stmt = stmt.where(Flashcard.lesson_id == int(lesson_id))
         else:
-            # Join through lessons → modules → courses
-            stmt = (
-                select(Flashcard)
-                .join(Lesson, Flashcard.lesson_id == Lesson.id)
-                .join(Module, Lesson.module_id == Module.id)
-                .where(Module.course_id == int(course_id))
-            )
+            stmt = stmt.where(Module.course_id == int(course_id))
+        if user_id:
+            stmt = stmt.where(Course.user_id == user_id)
 
         flashcards = db.scalars(stmt).all()
         results = [_fc_to_dict(fc) for fc in flashcards]
