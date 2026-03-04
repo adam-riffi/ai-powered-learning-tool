@@ -4,11 +4,10 @@ Flashcards are linked to individual lessons and stored in the database.
 They are NOT synced to Notion. The agent is responsible for generating
 the front/back content; this tool only stores and retrieves it.
 
-Typical workflow
-----------------
-1. Agent creates a lesson via manage_curriculum(action="add_lesson", ...)
-2. Agent generates flashcard pairs for that lesson
-3. Agent calls manage_flashcards(action="create", lesson_id=..., cards=[...])
+Typical workflow:
+    1. Agent creates a lesson via manage_curriculum(action="add_lesson", ...)
+    2. Agent generates flashcard pairs for that lesson
+    3. Agent calls manage_flashcards(action="create", lesson_id=..., cards=[...])
 """
 from __future__ import annotations
 
@@ -19,10 +18,6 @@ from sqlalchemy import select
 from database import get_db
 from models import Course, Flashcard, Lesson, Module
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _fc_to_dict(fc: Flashcard) -> dict:
     return {
@@ -35,17 +30,13 @@ def _fc_to_dict(fc: Flashcard) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Public tool function
-# ---------------------------------------------------------------------------
-
 def manage_flashcards(action: str, **kwargs: Any) -> dict:
     """Create, retrieve, or delete flashcards for lessons.
 
     Actions
     -------
     create
-        Required: user_id (str — UUID), lesson_id (int),
+        Required: user_id (str), lesson_id (int),
                   cards (list[dict]) — each dict must have "front" and "back" (str).
                                        Optional "tags" (list[str]) per card.
         Returns:  {"flashcards": [...], "created": <count>}
@@ -82,10 +73,6 @@ def manage_flashcards(action: str, **kwargs: Any) -> dict:
         )
 
 
-# ---------------------------------------------------------------------------
-# Action implementations
-# ---------------------------------------------------------------------------
-
 def _create(user_id: str, lesson_id: int, cards: list, **_: Any) -> dict:
     if not user_id:
         raise ValueError("'user_id' is required")
@@ -96,7 +83,6 @@ def _create(user_id: str, lesson_id: int, cards: list, **_: Any) -> dict:
         lesson = db.get(Lesson, int(lesson_id))
         if not lesson:
             raise ValueError(f"Lesson {lesson_id} not found")
-        # Verify lesson belongs to the user via Module → Course
         module = db.get(Module, lesson.module_id)
         course = db.get(Course, module.course_id) if module else None
         if not course or course.user_id != user_id:
@@ -130,7 +116,6 @@ def _list(
         raise ValueError("Provide at least one of: lesson_id, course_id")
 
     with get_db() as db:
-        # Always join up to Course to enable user_id filtering
         stmt = (
             select(Flashcard)
             .join(Lesson, Flashcard.lesson_id == Lesson.id)
@@ -147,12 +132,11 @@ def _list(
         flashcards = db.scalars(stmt).all()
         results = [_fc_to_dict(fc) for fc in flashcards]
 
-        # Filter by tags (card must contain all requested tags)
         if tags:
-            tag_set = set(t.lower() for t in tags)
+            tag_set = {t.lower() for t in tags}
             results = [
                 r for r in results
-                if tag_set.issubset(set(t.lower() for t in r["tags"]))
+                if tag_set.issubset({t.lower() for t in r["tags"]})
             ]
 
     return {"flashcards": results, "total": len(results)}

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import time as _time
+from datetime import datetime
 from typing import Any, Optional
 
 from notion_client import Client
@@ -56,16 +57,7 @@ def _archive_page_if_exists(notion: Client, page_id: Optional[str]) -> None:
 
 
 def _clean_lesson_content(text: str) -> str:
-    """
-    Strip JSON wrapper artefacts from LLM-generated lesson content.
-
-    The model sometimes outputs raw JSON in several forms:
-    - Valid single-line JSON: {"title": "...", "content": "## Real content"}
-    - Invalid multi-line JSON with content field
-    - JSON inline at start of text followed by markdown
-
-    In all cases, extract only the actual markdown content.
-    """
+    """Strip JSON wrapper artefacts from lesson content."""
     if not text:
         return text
 
@@ -141,27 +133,27 @@ def _clean_lesson_content(text: str) -> str:
 
 def _append_blocks_in_batches(notion: Client, page_id: str, blocks: list) -> None:
     """Send blocks to Notion in batches of 20 with retry and rate-limit sleep."""
-    BATCH_SIZE = 20
-    SLEEP_BETWEEN = 0.4
-    MAX_RETRIES = 3
+    batch_size = 20
+    sleep_between = 0.4
+    max_retries = 3
 
-    for i in range(0, len(blocks), BATCH_SIZE):
-        batch = blocks[i:i + BATCH_SIZE]
-        for attempt in range(MAX_RETRIES):
+    for i in range(0, len(blocks), batch_size):
+        batch = blocks[i:i + batch_size]
+        for attempt in range(max_retries):
             try:
                 notion.blocks.children.append(block_id=page_id, children=batch)
                 break
             except Exception as e:
                 err = str(e).lower()
-                if attempt < MAX_RETRIES - 1 and ("429" in err or "rate" in err or "timeout" in err):
+                if attempt < max_retries - 1 and ("429" in err or "rate" in err or "timeout" in err):
                     _time.sleep(2 ** attempt)
                 else:
                     raise
-        _time.sleep(SLEEP_BETWEEN)
+        _time.sleep(sleep_between)
 
 
 def _paragraph_blocks(text: str) -> list:
-    """Create one or more paragraph blocks, splitting at sentence boundaries to respect the 2000-char limit."""
+    """Create one or more paragraph blocks, splitting at sentence boundaries."""
     if not text:
         return []
     blocks = []
@@ -189,8 +181,9 @@ def _paragraph_blocks(text: str) -> list:
 def _markdown_to_blocks(text: str) -> list:
     """Convert simple markdown to Notion block objects.
 
-    Handles: headings (#-####), bullet lists (- *), numbered lists, blockquotes (>), code fences, paragraphs.
-    Long paragraphs are split into multiple blocks to respect the 2000-char annotation limit.
+    Handles: headings (#-####), bullet lists (- *), numbered lists,
+    blockquotes (>), code fences, paragraphs.
+    Long paragraphs are split to respect the 2000-char annotation limit.
     """
     blocks = []
     lines = text.split("\n")
@@ -273,7 +266,6 @@ def _create_course_page(notion: Client, course: Course, root_page_id: Optional[s
                         f"Goal: {course.goal}  |  "
                         f"Topic: {course.topic}"
                     ),
-                    "icon": {"emoji": "📚"},
                     "color": "blue_background",
                 },
             }
@@ -333,7 +325,6 @@ def _create_module_entry(notion: Client, database_id: str, module: Module) -> st
             "type": "callout",
             "callout": {
                 "rich_text": _rich_text(module.description),
-                "icon": {"emoji": "📦"},
                 "color": "blue_background",
             },
         })
@@ -357,7 +348,6 @@ def _create_lesson_entry(notion: Client, database_id: str, lesson: Lesson, modul
             "type": "callout",
             "callout": {
                 "rich_text": _rich_text(f"Objective: {lesson.objective}"),
-                "icon": {"emoji": "🎯"},
                 "color": "green_background",
             },
         })
@@ -428,7 +418,6 @@ def _publish_course(
                 lesson.notion_page_id = lesson_page_id
                 pages_created += 1
 
-        from datetime import datetime
         course.notion_page_id = course_page_id
         course.notion_database_id = database_id
         course.last_synced_at = datetime.utcnow()

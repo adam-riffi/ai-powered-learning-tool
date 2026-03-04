@@ -1,34 +1,28 @@
 """Page access control and user sidebar rendering.
 
-Usage — add at the top of every protected page, after imports:
+Usage — add at the top of every protected page:
 
     from auth_guard import require_auth, render_sidebar_user
 
     require_auth()
     render_sidebar_user()
 
-`current_user_id()` is the single point used by tools to scope data
-to the logged-in user. When Supabase is wired in, nothing changes here.
+current_user_id() is the single function used by pages to scope data
+to the logged-in user.
 """
 import streamlit as st
 
 from auth import UserSession, build_oauth_url
 
 
-# ---------------------------------------------------------------------------
-# Session helpers
-# ---------------------------------------------------------------------------
-
 def load_user_from_callback() -> None:
-    """
-    Detect an OAuth callback via query params, exchange the code,
+    """Detect an OAuth callback via query params, exchange the code,
     and store the user in session_state.
 
-    Must be called once per page load (before require_auth).
-    Clears the query params from the URL after processing.
+    Should be called once per page load before require_auth().
+    Clears query params from the URL after processing.
     """
     params = st.query_params
-
     code: str = params.get("code", "")
     provider: str = params.get("provider", "")
 
@@ -40,6 +34,7 @@ def load_user_from_callback() -> None:
         return
 
     try:
+        # Import différé pour éviter l'import circulaire au niveau module
         from auth import exchange_code_for_user
         user: UserSession = exchange_code_for_user(provider, code)
         st.session_state["user"] = user
@@ -50,25 +45,13 @@ def load_user_from_callback() -> None:
         st.query_params.clear()
 
 
-def current_user() -> UserSession | None:
-    return st.session_state.get("user")
-
-
 def current_user_id() -> str | None:
-    """Return the logged-in user's ID, or None. Used by tools to filter data."""
+    """Return the logged-in user's ID, or None."""
     return st.session_state.get("user_id")
 
 
-# ---------------------------------------------------------------------------
-# Page guard
-# ---------------------------------------------------------------------------
-
 def require_auth() -> None:
-    """
-    Redirect to the login page if no user is in session.
-    If an OAuth callback is in progress, process it first before redirecting.
-    Call this at the top of every protected page.
-    """
+    """Block page access if no user is in the session."""
     load_user_from_callback()
 
     if st.session_state.get("oauth_error"):
@@ -76,17 +59,15 @@ def require_auth() -> None:
 
     if not st.session_state.get("user"):
         if st.query_params.get("code"):
-            st.spinner("Connexion en cours...")
+            st.spinner("Logging in...")
             st.rerun()
-        st.switch_page("pages/5_Login.py")
+        st.warning("You must be logged in to access this page.")
+        st.page_link("pages/5_login.py", label="Log in", icon="🔑")
+        st.stop()
 
-
-# ---------------------------------------------------------------------------
-# UI components
-# ---------------------------------------------------------------------------
 
 def render_sidebar_user() -> None:
-    """Display the logged-in user and a logout button in the sidebar."""
+    """Display the logged-in user's name and a logout button in the sidebar."""
     user: UserSession | None = st.session_state.get("user")
     if not user:
         return
@@ -106,6 +87,7 @@ def render_sidebar_user() -> None:
 
 
 def _render_login_buttons() -> None:
+    """Render OAuth login buttons. Called by pages/5_login.py."""
     st.divider()
     col1, col2 = st.columns(2)
     with col1:

@@ -3,19 +3,19 @@
 User pastes text or uploads a PDF.
 The app structures the course and generates flashcards + quiz from that content.
 The number of modules and lessons is determined automatically by the model.
-
-Location: quiz_app/pages/0_Generate.py
 """
-import sys
+import io
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import json
-import io
 import streamlit as st
-from database import init_db
+
+from agent import run_agent_chunked
+from auth_guard import current_user_id, render_sidebar_user, require_auth
 from config import settings
-from auth_guard import require_auth, render_sidebar_user, current_user_id
+from database import init_db
 
 init_db()
 
@@ -26,17 +26,22 @@ render_sidebar_user()
 
 st.title("Create a course")
 
-if not settings.groq_api_key:
-    st.error(
-        "**GROQ_API_KEY missing.**\n\n"
-        "Add your key to the `.env` file:\n```\nGROQ_API_KEY=your_key_here\n```\n\n"
-        "Free key available at [console.groq.com](https://console.groq.com)."
-    )
-    st.stop()
-
 CHUNK_THRESHOLD = 4000
 
 level_map = {"Beginner": "beginner", "Intermediate": "intermediate", "Advanced": "advanced"}
+
+
+def _sync_secrets_to_settings() -> None:
+    """Inject Streamlit secrets into the settings object if not already set."""
+    try:
+        key = st.secrets.get("GROQ_API_KEY") or st.secrets.get("groq_api_key")
+        if key and not settings.groq_api_key:
+            settings.groq_api_key = key
+        model = st.secrets.get("GROQ_MODEL") or st.secrets.get("groq_model")
+        if model:
+            settings.groq_model = model
+    except Exception:
+        pass
 
 
 def extract_pdf_text(uploaded_file) -> str:
@@ -59,7 +64,6 @@ def _display_generation(agent_fn) -> None:
     current_module: dict = {"label": "", "index": 0, "total": 0}
 
     def on_text(text: str) -> None:
-        # Try to extract total module count from the agent's summary line
         if "module(s)" in text and "—" in text:
             try:
                 total = int(text.split("module(s)")[0].split()[-1])
@@ -91,7 +95,7 @@ def _display_generation(agent_fn) -> None:
             progress_placeholder.caption(f"Generating lesson: *{lesson}*")
 
     def on_tool_result(name: str, result: str) -> None:
-        pass  # Raw tool results are not shown to the user
+        pass
 
     status_placeholder.info("⏳ Generation in progress... (30–90 seconds depending on course size)")
 
@@ -99,7 +103,6 @@ def _display_generation(agent_fn) -> None:
         final_message = agent_fn(on_text, on_tool_call, on_tool_result)
         progress_placeholder.empty()
         status_placeholder.success("✅ Course created successfully!")
-
         if final_message:
             st.divider()
             st.subheader("Summary")
@@ -122,9 +125,16 @@ def _display_generation(agent_fn) -> None:
         status_placeholder.error(f"An error occurred: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Main form
-# ---------------------------------------------------------------------------
+_sync_secrets_to_settings()
+
+if not settings.groq_api_key:
+    st.error(
+        "**GROQ_API_KEY missing.**\n\n"
+        "Add your key to the `.env` file:\n```\nGROQ_API_KEY=your_key_here\n```\n\n"
+        "Free key available at [console.groq.com](https://console.groq.com)."
+    )
+    st.stop()
+
 st.caption("Paste your content or upload a PDF. The app structures the course and generates flashcards and quiz.")
 
 course_title = st.text_input(
@@ -205,8 +215,6 @@ if launch_content:
             f"Generation in **{auto_modules + 1} steps** to respect API limits "
             f"(~1 minute wait between each step)."
         )
-
-    from agent import run_agent_chunked
 
     def _run(on_text, on_tool_call, on_tool_result):
         return run_agent_chunked(

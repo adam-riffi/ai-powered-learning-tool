@@ -3,16 +3,17 @@
 Run with:
     streamlit run quiz_app/app.py
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import streamlit as st
-from database import init_db, get_db
-from models import Course, Module, Lesson, QuizAttempt
 from sqlalchemy import select
-from config import settings
-from auth_guard import require_auth, render_sidebar_user, current_user_id
+import streamlit as st
+
+from auth_guard import current_user_id, render_sidebar_user, require_auth
+from database import get_db, init_db
+from models import Course, Lesson, QuizAttempt
 
 init_db()
 
@@ -24,9 +25,6 @@ render_sidebar_user()
 st.title("📚 Learnly")
 st.caption("Select lessons, then start a quiz or study flashcards.")
 
-# ---------------------------------------------------------------------------
-# Notion connection banner
-# ---------------------------------------------------------------------------
 if st.session_state.get("notion_token"):
     token_val = st.session_state["notion_token"]
     masked = token_val[:10] + "..." + token_val[-4:]
@@ -36,9 +34,6 @@ if st.session_state.get("notion_token"):
         "Pour changer de compte, rendez-vous sur **Connexion Notion**."
     )
 
-# ---------------------------------------------------------------------------
-# Load all courses
-# ---------------------------------------------------------------------------
 with get_db() as db:
     stmt = select(Course).order_by(Course.title)
     uid = current_user_id()
@@ -90,9 +85,6 @@ if not course_data:
     )
     st.stop()
 
-# ---------------------------------------------------------------------------
-# Step 1: Select courses
-# ---------------------------------------------------------------------------
 st.subheader("Step 1: Select courses")
 all_course_titles = {c["title"]: c for c in course_data}
 selected_course_titles = st.multiselect(
@@ -107,9 +99,6 @@ if not selected_course_titles:
 
 selected_courses = [all_course_titles[t] for t in selected_course_titles]
 
-# ---------------------------------------------------------------------------
-# Step 2: Select lessons
-# ---------------------------------------------------------------------------
 st.subheader("Step 2: Select lessons")
 all_lessons: list[dict] = []
 for course in selected_courses:
@@ -122,8 +111,8 @@ for course in selected_courses:
                 "label": f"{course['title']} › {module['title']} › {lesson['title']}",
             })
 
-lesson_labels = [l["label"] for l in all_lessons]
-lesson_by_label = {l["label"]: l for l in all_lessons}
+lesson_labels = [lesson["label"] for lesson in all_lessons]
+lesson_by_label = {lesson["label"]: lesson for lesson in all_lessons}
 
 selected_labels = st.multiselect(
     "Select lessons to include",
@@ -137,12 +126,9 @@ if not selected_labels:
 
 selected_lessons = [lesson_by_label[label] for label in selected_labels]
 
-has_any_quiz = any(l.get("has_quizzes") for l in selected_lessons)
-has_any_fc   = any(l.get("has_flashcards") for l in selected_lessons)
+has_any_quiz = any(lesson.get("has_quizzes") for lesson in selected_lessons)
+has_any_fc = any(lesson.get("has_flashcards") for lesson in selected_lessons)
 
-# ---------------------------------------------------------------------------
-# Step 3: Quiz settings
-# ---------------------------------------------------------------------------
 st.subheader("Step 3: Quiz settings")
 
 col1, col2 = st.columns(2)
@@ -168,14 +154,10 @@ type_map = {
 }
 selected_type = type_map[question_type_filter]
 
-# ---------------------------------------------------------------------------
-# Step 4: Actions
-# ---------------------------------------------------------------------------
 st.divider()
 
 quiz_col, fc_col = st.columns(2)
 
-# ── Flashcards ──────────────────────────────────────────────────────────────
 with fc_col:
     fc_disabled = not has_any_fc
     fc_help = None if has_any_fc else "None of the selected lessons have flashcards yet."
@@ -188,13 +170,13 @@ with fc_col:
     ):
         fc_lessons = [
             {
-                "lesson_id": l["id"],
-                "lesson_title": l["title"],
-                "module_title": l["module_title"],
-                "course_title": l["course_title"],
+                "lesson_id": lesson["id"],
+                "lesson_title": lesson["title"],
+                "module_title": lesson["module_title"],
+                "course_title": lesson["course_title"],
             }
-            for l in selected_lessons
-            if l.get("has_flashcards")
+            for lesson in selected_lessons
+            if lesson.get("has_flashcards")
         ]
         st.session_state["flashcard_lessons"] = fc_lessons
         for key in list(st.session_state.keys()):
@@ -204,7 +186,6 @@ with fc_col:
         st.session_state["fc_revealed"] = False
         st.switch_page("pages/3_Flashcards.py")
 
-# ── Quiz ────────────────────────────────────────────────────────────────────
 with quiz_col:
     quiz_disabled = not has_any_quiz
     quiz_help = None if has_any_quiz else "None of the selected lessons have quiz questions yet."
@@ -255,13 +236,12 @@ with quiz_col:
                         seen.add(qtext)
                         unique_questions.append(q)
 
-                questions_to_use = unique_questions[:questions_per_lesson]
-                max_score = float(10 * len(questions_to_use))
+                subset = unique_questions[:questions_per_lesson]
 
                 new_attempt = QuizAttempt(
                     lesson_id=lesson_info["id"],
-                    questions=questions_to_use,
-                    max_score=max_score,
+                    questions=subset,
+                    max_score=float(10 * len(subset)),
                 )
                 db.add(new_attempt)
                 db.flush()
@@ -270,43 +250,40 @@ with quiz_col:
                     "attempt_id": new_attempt.id,
                     "lesson_id": lesson_info["id"],
                     "lesson_title": lesson_info["title"],
-                    "module_title": lesson_info["module_title"],
-                    "course_title": lesson_info["course_title"],
-                    "num_questions": len(questions_to_use),
+                    "module_title": lesson_info.get("module_title", ""),
+                    "course_title": lesson_info.get("course_title", ""),
+                    "num_questions": len(subset),
                 })
 
-        if errors:
-            for err in errors:
-                st.warning(err)
+        for err in errors:
+            st.warning(err)
 
         if attempt_ids:
             st.session_state["quiz_attempts"] = attempt_ids
-            st.session_state["quiz_current_lesson_idx"] = 0
             st.session_state["quiz_answers"] = {}
-            st.success(
-                f"Quiz started! {len(attempt_ids)} lesson(s), "
-                f"up to {questions_per_lesson} question(s) each."
-            )
             st.switch_page("pages/1_Take_Quiz.py")
-        elif not errors:
-            st.error("No valid lessons with questions found for the selected configuration.")
 
-# ---------------------------------------------------------------------------
-# Notion — Publication
-# ---------------------------------------------------------------------------
 session_token = st.session_state.get("notion_token")
-session_root  = st.session_state.get("notion_root_page_id") or None
+session_root = st.session_state.get("notion_root_page_id")
 
-if session_token or settings.notion_api_key:
+if session_token:
     st.divider()
-    st.subheader("📄 Publier sur Notion")
+    st.subheader("Publish to Notion")
 
-    courses_to_publish = {c["title"]: c for c in selected_courses}
-    already_synced = [t for t, c in courses_to_publish.items() if c.get("notion_page_id")]
+    publish_options = [c["title"] for c in selected_courses]
+    courses_to_publish_titles = st.multiselect(
+        "Courses to publish / republish",
+        options=publish_options,
+        default=[c["title"] for c in selected_courses if not c.get("notion_page_id")],
+    )
+    courses_to_publish = {
+        title: all_course_titles[title]
+        for title in courses_to_publish_titles
+    }
 
-    if already_synced:
-        st.info(
-            f"Déjà publié : {', '.join(already_synced)}. "
+    courses_with_notion = [c for c in selected_courses if c.get("notion_page_id")]
+    if courses_with_notion:
+        st.caption(
             "La republication supprimera et recréera automatiquement les pages Notion."
         )
 
@@ -315,20 +292,18 @@ if session_token or settings.notion_api_key:
 
         for title, course in courses_to_publish.items():
             try:
-                kwargs: dict = {"action": "publish_course", "course_id": course["id"]}
-
-                if session_token:
-                    kwargs["api_key"] = session_token
-                    kwargs["root_page_id"] = session_root
-
-                result = manage_notion_page(**kwargs)
+                result = manage_notion_page(
+                    action="publish_course",
+                    course_id=course["id"],
+                    api_key=session_token,
+                    root_page_id=session_root,
+                )
                 action_label = "Republié" if course.get("notion_page_id") else "Publié"
                 st.success(
                     f"✓ **{title}** — {action_label}, {result['pages_created']} pages créées"
                 )
             except Exception as e:
                 st.error(f"✗ **{title}** — {e}")
-
 else:
     st.divider()
     st.info(
