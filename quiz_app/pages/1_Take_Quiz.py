@@ -12,8 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import streamlit as st
 from tools.quiz_tool import manage_quiz
+from auth_guard import require_auth, render_sidebar_user
 
 st.set_page_config(page_title="Take Quiz", page_icon="🧠", layout="wide")
+
+require_auth()
+render_sidebar_user()
 
 # ---------------------------------------------------------------------------
 # Guard: must come from the setup page
@@ -43,7 +47,6 @@ for lesson_block in attempts:
     module_title = lesson_block.get("module_title", "")
     course_title = lesson_block.get("course_title", "")
 
-    # Fetch questions for this attempt
     attempt_data = manage_quiz(action="get", attempt_id=attempt_id)
     questions = attempt_data.get("questions", [])
 
@@ -51,7 +54,6 @@ for lesson_block in attempts:
         st.info(f"No questions for lesson '{lesson_title}'.")
         continue
 
-    # Lesson header
     st.subheader(f"📖 {lesson_title}")
     if module_title or course_title:
         st.caption(f"{course_title} › {module_title}")
@@ -82,7 +84,7 @@ for lesson_block in attempts:
             )
             lesson_answers[idx] = [chosen] if chosen else []
 
-        else:  # multi
+        else:
             if not options:
                 st.warning("This question has no options — skipping.")
                 lesson_answers[idx] = []
@@ -97,7 +99,7 @@ for lesson_block in attempts:
                     chosen_multi.append(opt)
             lesson_answers[idx] = chosen_multi
 
-        st.write("")  # spacing
+        st.write("")
 
     answers_store[attempt_id] = lesson_answers
     st.divider()
@@ -115,13 +117,11 @@ if st.button("✅ Submit All Answers", type="primary", use_container_width=True)
         attempt_id = lesson_block["attempt_id"]
         lesson_answers = answers_store.get(attempt_id, {})
 
-        # Build answers list
         answers_payload = [
             {"question_index": q_idx, "selected": selected}
             for q_idx, selected in lesson_answers.items()
         ]
 
-        # Check for unanswered questions
         attempt_data = manage_quiz(action="get", attempt_id=attempt_id)
         questions = attempt_data.get("questions", [])
         unanswered = [

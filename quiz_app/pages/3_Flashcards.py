@@ -14,8 +14,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import random
 import streamlit as st
 from tools.flashcard_tool import manage_flashcards
+from auth_guard import require_auth, render_sidebar_user
 
 st.set_page_config(page_title="Flashcards", page_icon="🃏", layout="centered")
+
+require_auth()
+render_sidebar_user()
 
 # ---------------------------------------------------------------------------
 # Guard: must arrive here via session_state set by app.py
@@ -26,7 +30,7 @@ if "flashcard_lessons" not in st.session_state or not st.session_state["flashcar
         st.switch_page("app.py")
     st.stop()
 
-lessons: list[dict] = st.session_state["flashcard_lessons"]  # [{lesson_id, lesson_title, ...}]
+lessons: list[dict] = st.session_state["flashcard_lessons"]
 
 # ---------------------------------------------------------------------------
 # Load cards once per session (cache in session_state)
@@ -78,19 +82,15 @@ idx: int = st.session_state["fc_index"]
 revealed: bool = st.session_state["fc_revealed"]
 card = deck[idx]
 
-# Progress bar
 progress_pct = (idx + 1) / len(deck)
 st.progress(progress_pct, text=f"Card {idx + 1} of {len(deck)}")
 
-# Card display
 st.markdown("---")
 
 card_container = st.container(border=True)
 with card_container:
-    # Lesson tag
     st.caption(f"📖 {card.get('lesson_title', '')}")
 
-    # Tags
     tags = card.get("tags") or []
     if tags:
         st.caption("🏷️ " + "  ·  ".join(tags))

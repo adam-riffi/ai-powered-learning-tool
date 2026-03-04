@@ -12,8 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import streamlit as st
 from tools.quiz_tool import manage_quiz
+from auth_guard import require_auth, render_sidebar_user
 
 st.set_page_config(page_title="Quiz Results", page_icon="📊", layout="wide")
+
+require_auth()
+render_sidebar_user()
 
 # ---------------------------------------------------------------------------
 # Guard
@@ -50,96 +54,77 @@ for lesson_block in attempts:
     except Exception as e:
         lesson_results.append({"block": lesson_block, "error": str(e)})
 
-# Summary header
 overall_pct = round(total_score / total_max * 100, 1) if total_max > 0 else 0
 overall_passed = lessons_passed == len(attempts)
 
 summary_col1, summary_col2, summary_col3 = st.columns(3)
 summary_col1.metric("Overall Score", f"{total_score:.1f} / {total_max:.1f}")
-summary_col2.metric("Percentage", f"{overall_pct}%")
-summary_col3.metric(
-    "Lessons Passed",
-    f"{lessons_passed} / {len(attempts)}",
-    delta="Pass" if overall_passed else "Fail",
-    delta_color="normal" if overall_passed else "inverse",
-)
+summary_col2.metric("Pass Rate", f"{overall_pct}%")
+summary_col3.metric("Lessons Passed", f"{lessons_passed} / {len(attempts)}")
+
+if overall_passed:
+    st.success("All lessons passed!")
+else:
+    st.warning(f"{len(attempts) - lessons_passed} lesson(s) below the passing threshold (70%).")
 
 st.divider()
 
 # ---------------------------------------------------------------------------
 # Per-lesson breakdown
 # ---------------------------------------------------------------------------
-retry_questions: dict[int, list[dict]] = {}  # lesson_id → wrong questions
+retry_questions: dict[int, list[dict]] = {}
 
 for item in lesson_results:
     block = item["block"]
     lesson_title = block["lesson_title"]
-    module_title = block.get("module_title", "")
 
     if "error" in item:
-        st.error(f"Could not load results for '{lesson_title}': {item['error']}")
+        st.error(f"**{lesson_title}**: Could not load results — {item['error']}")
         continue
 
     result = item["result"]
-    pct = result.get("percentage", 0)
     passed = result.get("passed", False)
+    score = result.get("score", 0)
+    max_score = result.get("max_score", 0)
+    pct = round(score / max_score * 100, 1) if max_score else 0
 
-    # Lesson header with badge
-    badge = "✅ PASSED" if passed else "❌ FAILED"
-    badge_color = "green" if passed else "red"
-    st.markdown(
-        f"### {lesson_title}  "
-        f"<span style='color:{badge_color};font-size:0.8em'>{badge}</span>",
-        unsafe_allow_html=True,
-    )
-    if module_title:
-        st.caption(f"{block.get('course_title','')} › {module_title}")
+    badge = "✅ Pass" if passed else "❌ Fail"
+    with st.expander(f"{badge} — {lesson_title} ({pct}%)", expanded=not passed):
+        q_col1, q_col2 = st.columns(2)
+        q_col1.metric("Score", f"{score:.1f} / {max_score:.1f}")
+        q_col2.metric("Result", "Pass" if passed else "Fail")
 
-    score_col, pct_col = st.columns([1, 3])
-    score_col.metric(
-        "Score",
-        f"{result.get('score', 0):.1f} / {result.get('max_score', 0):.1f}",
-    )
-    pct_col.progress(int(pct), text=f"{pct}%")
+        breakdown = result.get("breakdown", [])
+        wrong_for_retry = []
 
-    # Per-question table
-    wrong_for_retry: list[dict] = []
-    for q in result.get("questions", []):
-        is_correct = q.get("is_correct", False)
-        icon = "✓" if is_correct else "✗"
-        color = "green" if is_correct else "red"
+        for q in breakdown:
+            is_correct = q.get("is_correct", False)
+            icon = "✓" if is_correct else "✗"
+            color = "green" if is_correct else "red"
+            user_answer = q.get("user_answer", [])
+            correct_answer = q.get("correct_answer", [])
 
-        user_ans = q.get("user_answer", [])
-        correct_ans = q.get("correct_answer")
+            user_display = ", ".join(user_answer) if isinstance(user_answer, list) else str(user_answer)
+            correct_display = ", ".join(correct_answer) if isinstance(correct_answer, list) else str(correct_answer)
 
-        # Format answers for display
-        if isinstance(user_ans, list):
-            user_display = ", ".join(user_ans) if user_ans else "—"
-        else:
-            user_display = str(user_ans) if user_ans else "—"
+            st.markdown(
+                f"<span style='color:{color}'>{icon}</span> "
+                f"**Q{q.get('question_index', 0) + 1}.** "
+                f"{q.get('question', '')}",
+                unsafe_allow_html=True,
+            )
 
-        if isinstance(correct_ans, list):
-            correct_display = ", ".join(correct_ans)
-        else:
-            correct_display = str(correct_ans) if correct_ans else "—"
+            detail_col1, detail_col2 = st.columns(2)
+            detail_col1.markdown(f"Your answer: `{user_display}`")
+            detail_col2.markdown(f"Correct: `{correct_display}`")
 
-        st.markdown(
-            f"<span style='color:{color}'>{icon}</span> **Q{q['question_index']+1}.** "
-            f"{q.get('question', '')}",
-            unsafe_allow_html=True,
-        )
+            if not is_correct:
+                wrong_for_retry.append(q)
 
-        detail_col1, detail_col2 = st.columns(2)
-        detail_col1.markdown(f"Your answer: `{user_display}`")
-        detail_col2.markdown(f"Correct: `{correct_display}`")
+            st.write("")
 
-        if not is_correct:
-            wrong_for_retry.append(q)
-
-        st.write("")
-
-    if wrong_for_retry:
-        retry_questions[block["lesson_id"]] = wrong_for_retry
+        if wrong_for_retry:
+            retry_questions[block["lesson_id"]] = wrong_for_retry
 
     st.divider()
 

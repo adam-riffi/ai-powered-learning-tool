@@ -12,17 +12,20 @@ from database import init_db, get_db
 from models import Course, Module, Lesson, QuizAttempt
 from sqlalchemy import select
 from config import settings
+from auth_guard import require_auth, render_sidebar_user
 
-# Ensure tables exist
 init_db()
 
 st.set_page_config(page_title="Learn AI", page_icon="🎓", layout="wide")
+
+require_auth()
+render_sidebar_user()
 
 st.title("🎓 Learning Assistant")
 st.caption("Select lessons, then start a quiz or study flashcards.")
 
 # ---------------------------------------------------------------------------
-# Bandeau de connexion Notion (si connecté via la page Connexion)
+# Notion connection banner
 # ---------------------------------------------------------------------------
 if st.session_state.get("notion_token"):
     token_val = st.session_state["notion_token"]
@@ -141,11 +144,10 @@ st.subheader("Step 3: Quiz settings")
 col1, col2 = st.columns(2)
 
 with col1:
-    max_questions = 20
     questions_per_lesson = st.slider(
         "Questions per lesson",
         min_value=1,
-        max_value=max_questions,
+        max_value=20,
         value=5,
     )
 
@@ -224,9 +226,7 @@ with quiz_col:
                     all_questions.extend(attempt.questions or [])
 
                 if not all_questions:
-                    errors.append(
-                        f"Lesson '{lesson_info['title']}' has no quiz questions."
-                    )
+                    errors.append(f"Lesson '{lesson_info['title']}' has no quiz questions.")
                     continue
 
                 if selected_type:
@@ -293,7 +293,6 @@ with quiz_col:
 session_token = st.session_state.get("notion_token")
 session_root  = st.session_state.get("notion_root_page_id") or None
 
-# Affiche la section si token session OU clé .env présente
 if session_token or settings.notion_api_key:
     st.divider()
     st.subheader("📄 Publier sur Notion")
@@ -314,7 +313,6 @@ if session_token or settings.notion_api_key:
             try:
                 kwargs: dict = {"action": "publish_course", "course_id": course["id"]}
 
-                # Priorité : token de session > clé .env
                 if session_token:
                     kwargs["api_key"] = session_token
                     kwargs["root_page_id"] = session_root
