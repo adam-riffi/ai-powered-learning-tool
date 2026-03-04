@@ -1,8 +1,8 @@
 """Take Quiz page.
 
 Displays questions grouped by lesson.
-- Single-answer → radio buttons
-- Multi-select → checkboxes
+- Single answer  -> radio buttons
+- Multi-select   -> checkboxes
 
 Users work through each lesson block and submit all at once.
 """
@@ -19,28 +19,28 @@ st.set_page_config(page_title="Take Quiz", page_icon="🧠", layout="wide")
 require_auth()
 render_sidebar_user()
 
-# ---------------------------------------------------------------------------
-# Guard: must come from the setup page
-# ---------------------------------------------------------------------------
 if "quiz_attempts" not in st.session_state or not st.session_state["quiz_attempts"]:
     st.warning("No active quiz. Please start a quiz from the home page.")
-    if st.button("← Back to Setup"):
+    if st.button("Back to Setup"):
         st.switch_page("app.py")
     st.stop()
 
 attempts: list[dict] = st.session_state["quiz_attempts"]
 answers_store: dict = st.session_state.setdefault("quiz_answers", {})
 
-st.title("🧠 Take Quiz")
+# Store question counts per attempt to avoid re-fetching on submit
+if "quiz_question_counts" not in st.session_state:
+    st.session_state["quiz_question_counts"] = {}
+question_counts: dict = st.session_state["quiz_question_counts"]
+
+st.title("Take Quiz")
 st.caption(
     f"Answering {len(attempts)} lesson(s). "
-    "Complete all sections, then hit **Submit All** at the bottom."
+    "Complete all sections, then hit Submit All at the bottom."
 )
 st.divider()
 
-# ---------------------------------------------------------------------------
 # Render questions per lesson block
-# ---------------------------------------------------------------------------
 for lesson_block in attempts:
     attempt_id = lesson_block["attempt_id"]
     lesson_title = lesson_block["lesson_title"]
@@ -50,13 +50,16 @@ for lesson_block in attempts:
     attempt_data = manage_quiz(action="get", attempt_id=attempt_id)
     questions = attempt_data.get("questions", [])
 
+    # Cache the question count so we don't need another DB call on submit
+    question_counts[attempt_id] = len(questions)
+
     if not questions:
         st.info(f"No questions for lesson '{lesson_title}'.")
         continue
 
-    st.subheader(f"📖 {lesson_title}")
+    st.subheader(lesson_title)
     if module_title or course_title:
-        st.caption(f"{course_title} › {module_title}")
+        st.caption(f"{course_title} > {module_title}")
 
     lesson_answers: dict[int, list[str]] = {}
 
@@ -66,36 +69,28 @@ for lesson_block in attempts:
         qtype = question.get("type", "single")
 
         st.markdown(f"**Q{idx + 1}. {qtext}**")
-
         key = f"attempt_{attempt_id}_q{idx}"
 
-        if qtype == "single":
-            if not options:
-                st.warning("This question has no options — skipping.")
-                lesson_answers[idx] = []
-                continue
+        if not options:
+            st.warning("This question has no options — skipping.")
+            lesson_answers[idx] = []
+            continue
 
+        if qtype == "single":
             chosen = st.radio(
-                label=f"Select one answer for Q{idx+1}",
+                label=f"Select one answer for Q{idx + 1}",
                 options=options,
                 index=None,
                 key=key,
                 label_visibility="collapsed",
             )
             lesson_answers[idx] = [chosen] if chosen else []
-
         else:
-            if not options:
-                st.warning("This question has no options — skipping.")
-                lesson_answers[idx] = []
-                continue
-
             st.caption("Select all that apply:")
             chosen_multi: list[str] = []
             for opt in options:
                 opt_key = f"{key}_opt_{opt}"
-                checked = st.checkbox(opt, key=opt_key)
-                if checked:
+                if st.checkbox(opt, key=opt_key):
                     chosen_multi.append(opt)
             lesson_answers[idx] = chosen_multi
 
@@ -104,38 +99,36 @@ for lesson_block in attempts:
     answers_store[attempt_id] = lesson_answers
     st.divider()
 
-# ---------------------------------------------------------------------------
-# Submit All button
-# ---------------------------------------------------------------------------
+# Submit all answers
 st.subheader("Ready?")
 
-if st.button("✅ Submit All Answers", type="primary", use_container_width=True):
+if st.button("Submit All Answers", type="primary", use_container_width=True):
     all_submitted = True
     submission_errors: list[str] = []
 
     for lesson_block in attempts:
         attempt_id = lesson_block["attempt_id"]
         lesson_answers = answers_store.get(attempt_id, {})
+        num_questions = question_counts.get(attempt_id, 0)
 
-        answers_payload = [
-            {"question_index": q_idx, "selected": selected}
-            for q_idx, selected in lesson_answers.items()
-        ]
-
-        attempt_data = manage_quiz(action="get", attempt_id=attempt_id)
-        questions = attempt_data.get("questions", [])
         unanswered = [
-            i for i in range(len(questions))
-            if not answers_store.get(attempt_id, {}).get(i)
+            i for i in range(num_questions)
+            if not lesson_answers.get(i)
         ]
 
         if unanswered:
             submission_errors.append(
                 f"Lesson '{lesson_block['lesson_title']}': "
-                f"{len(unanswered)} unanswered question(s) (Q{[u+1 for u in unanswered]})."
+                f"{len(unanswered)} unanswered question(s) "
+                f"(Q{[u + 1 for u in unanswered]})."
             )
             all_submitted = False
             continue
+
+        answers_payload = [
+            {"question_index": q_idx, "selected": selected}
+            for q_idx, selected in lesson_answers.items()
+        ]
 
         try:
             manage_quiz(action="submit", attempt_id=attempt_id, answers=answers_payload)

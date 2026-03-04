@@ -5,20 +5,22 @@ directly in the interface, without touching the .env file.
 
 The token is stored in st.session_state["notion_token"] and
 st.session_state["notion_root_page_id"] for the duration of the session.
-
-Location: quiz_app/pages/4_notion_connect.py
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+from sqlalchemy import select
 import streamlit as st
-from auth_guard import require_auth, render_sidebar_user
+
+from auth_guard import render_sidebar_user, require_auth
+from database import get_db
+from models import Course
+from tools.notion_tool import manage_notion_page
 
 
-def _do_publish(courses: list):
-    from tools.notion_tool import manage_notion_page
-
+def _do_publish(courses: list) -> None:
     token = st.session_state["notion_token"]
     root_page_id = st.session_state.get("notion_root_page_id") or None
 
@@ -40,11 +42,7 @@ def _do_publish(courses: list):
                 st.error(f"Error for '{course['title']}': {e}")
 
 
-def _publish_section():
-    from database import get_db
-    from models import Course
-    from sqlalchemy import select
-
+def _publish_section() -> None:
     with get_db() as db:
         courses = db.scalars(select(Course).order_by(Course.title)).all()
         course_list = [
@@ -78,10 +76,6 @@ def _publish_section():
         selected = [c for c in course_list if c["title"] in selected_titles]
         _do_publish(selected)
 
-
-# ---------------------------------------------------------------------------
-# Page layout
-# ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="Notion Connection", layout="centered")
 

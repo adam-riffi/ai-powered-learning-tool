@@ -1,27 +1,26 @@
 """Login page.
 
 Handles three states:
-1. OAuth callback  — code + provider in query params  → exchange and redirect
-2. Already logged in                                  → show user info
-3. Not logged in                                      → show login buttons
+1. OAuth callback  — code + provider in query params  -> exchange and redirect
+2. Already logged in                                  -> show user info
+3. Not logged in                                      -> show login buttons
 
-Location: quiz_app/pages/0_Login.py
+Location: quiz_app/pages/5_login.py
 """
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import streamlit as st
-from auth_guard import load_user_from_callback, render_sidebar_user, _render_login_buttons
+
+from auth_guard import _render_login_buttons, load_user_from_callback, render_sidebar_user
 
 st.set_page_config(page_title="Login", layout="centered")
 
 load_user_from_callback()
 render_sidebar_user()
 
-# ---------------------------------------------------------------------------
-# Already authenticated
-# ---------------------------------------------------------------------------
 user = st.session_state.get("user")
 
 if user:
@@ -46,15 +45,9 @@ if user:
             st.rerun()
     st.stop()
 
-# ---------------------------------------------------------------------------
-# OAuth error (bad code, revoked token, etc.)
-# ---------------------------------------------------------------------------
 if st.session_state.get("oauth_error"):
     st.error(f"Authentication failed: {st.session_state.pop('oauth_error')}")
 
-# ---------------------------------------------------------------------------
-# Not authenticated — show login options
-# ---------------------------------------------------------------------------
 st.title("Login")
 st.write("Sign in to access your courses, quizzes and flashcards.")
 st.divider()

@@ -1,23 +1,21 @@
 """Quiz management tool.
 
 Handles storing, retrieving, and scoring quiz attempts for lessons.
-No AI — the agent generates questions; this tool stores them and
-scores submitted answers.
+No content generation happens here — this module only manages persistence
+and scoring logic.
 
-Question types
---------------
-- "single": one correct answer (correct_answer: str)
-- "multi":  multiple correct answers (correct_answers: list[str])
+Question types:
+    single  — one correct answer (correct_answer: str)
+    multi   — multiple correct answers (correct_answers: list[str])
 
-Scoring
--------
-Each question is worth `max_score / num_questions` points.
-Multi-select: full credit only if the selected set exactly matches correct_answers.
-Pass threshold: 70%.
+Scoring:
+    Each question is worth max_score / num_questions points.
+    Multi-select: full credit only if the selected set exactly matches correct_answers.
+    Pass threshold: 70%.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -25,10 +23,6 @@ from sqlalchemy import select
 from database import get_db
 from models import Course, Lesson, Module, QuizAttempt
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _attempt_to_dict(attempt: QuizAttempt, include_questions: bool = True) -> dict:
     d: dict = {
@@ -49,61 +43,28 @@ def _attempt_to_dict(attempt: QuizAttempt, include_questions: bool = True) -> di
 
 
 def _score_question(question: dict, selected: list) -> bool:
-    """Return True if the answer is fully correct."""
+    """Return True if the submitted answer is fully correct."""
     qtype = question.get("type", "single")
     if qtype == "single":
         correct = str(question.get("correct_answer", "")).strip().upper()
         user = str(selected[0]).strip().upper() if selected else ""
         return user == correct
-    else:  # multi
+    elif qtype == "multi":
         correct_set = {str(a).strip().upper() for a in question.get("correct_answers", [])}
         user_set = {str(a).strip().upper() for a in selected}
         return user_set == correct_set
+    return False
 
-
-# ---------------------------------------------------------------------------
-# Public tool function
-# ---------------------------------------------------------------------------
 
 def manage_quiz(action: str, **kwargs: Any) -> dict:
     """Create, submit, and retrieve quiz attempts for lessons.
 
-    Actions
-    -------
-    create
-        Required: user_id (str — UUID), lesson_id (int),
-                  questions (list[dict]) — each question dict:
-                    {
-                      "question": "What is X?",
-                      "options": ["A", "B", "C", "D"],
-                      "correct_answer": "B",        # for type "single"
-                      "correct_answers": ["A","C"], # for type "multi"
-                      "type": "single" | "multi"    # defaults to "single"
-                    }
-        Optional: max_score (float) — total points, defaults to 10 * num_questions
-        Returns:  quiz attempt dict (unanswered)
-
-    submit
-        Required: attempt_id (int),
-                  answers (list[dict]) — each answer dict:
-                    {
-                      "question_index": 0,
-                      "selected": ["B"]   # always a list, even for single-answer
-                    }
-        Returns:  scored attempt dict with score, passed, weak_areas
-
-    get
-        Required: attempt_id (int)
-        Returns:  attempt dict with questions and answers
-
-    list
-        Required: lesson_id (int)
-        Optional: user_id (str) — filter to attempts belonging to this user's courses.
-        Returns:  {"attempts": [...], "total": <count>}  (summary, no questions)
-
-    results
-        Required: attempt_id (int)
-        Returns:  per-question breakdown with is_correct, user answer, correct answer
+    Actions:
+        create  — store a new set of questions for a lesson
+        submit  — score a submitted attempt
+        get     — retrieve an attempt with its questions
+        list    — list all attempts for a lesson
+        results — per-question breakdown after submission
     """
     action = action.strip().lower()
 
@@ -119,23 +80,18 @@ def manage_quiz(action: str, **kwargs: Any) -> dict:
         return _results(**kwargs)
     else:
         raise ValueError(
-            f"Unknown action '{action}'. Valid actions: create, submit, get, list, results"
+            f"Unknown action '{action}'. "
+            "Valid actions: create, submit, get, list, results"
         )
 
 
-# ---------------------------------------------------------------------------
-# Action implementations
-# ---------------------------------------------------------------------------
-
 def _create(
-    user_id: str,
     lesson_id: int,
     questions: list,
+    user_id: Optional[str] = None,
     max_score: Optional[float] = None,
     **_: Any,
 ) -> dict:
-    if not user_id:
-        raise ValueError("'user_id' is required")
     if not questions:
         raise ValueError("'questions' must be a non-empty list")
 
@@ -143,13 +99,13 @@ def _create(
         lesson = db.get(Lesson, int(lesson_id))
         if not lesson:
             raise ValueError(f"Lesson {lesson_id} not found")
-        # Verify lesson belongs to the user via Module → Course
-        module = db.get(Module, lesson.module_id)
-        course = db.get(Course, module.course_id) if module else None
-        if not course or course.user_id != user_id:
-            raise ValueError(f"Lesson {lesson_id} not found")
 
-        # Default: 10 points per question
+        if user_id:
+            module = db.get(Module, lesson.module_id)
+            course = db.get(Course, module.course_id) if module else None
+            if not course or course.user_id != user_id:
+                raise ValueError(f"Lesson {lesson_id} not found")
+
         score_total = float(max_score) if max_score is not None else float(10 * len(questions))
 
         attempt = QuizAttempt(
@@ -160,6 +116,7 @@ def _create(
         db.add(attempt)
         db.flush()
         result = _attempt_to_dict(attempt)
+
     return result
 
 
@@ -174,7 +131,6 @@ def _submit(attempt_id: int, answers: list, **_: Any) -> dict:
         questions = attempt.questions
         points_per_q = attempt.max_score / len(questions) if questions else 0.0
 
-        # Build answer map: question_index → selected list
         answer_map: dict[int, list] = {
             int(a["question_index"]): a.get("selected", [])
             for a in answers
@@ -196,10 +152,11 @@ def _submit(attempt_id: int, answers: list, **_: Any) -> dict:
         attempt.score = round(score, 2)
         attempt.passed = passed
         attempt.weak_areas = weak_areas
-        attempt.completed_at = datetime.utcnow()
+        attempt.completed_at = datetime.now(timezone.utc)
         db.flush()
 
         result = _attempt_to_dict(attempt)
+
     return result
 
 
@@ -222,10 +179,13 @@ def _list(lesson_id: int, user_id: Optional[str] = None, **_: Any) -> dict:
             .where(QuizAttempt.lesson_id == int(lesson_id))
             .order_by(QuizAttempt.created_at.desc())
         )
+
         if user_id:
             stmt = stmt.where(Course.user_id == user_id)
+
         attempts = db.scalars(stmt).all()
         results = [_attempt_to_dict(a, include_questions=False) for a in attempts]
+
     return {"attempts": results, "total": len(results)}
 
 
@@ -235,7 +195,7 @@ def _results(attempt_id: int, **_: Any) -> dict:
         if not attempt:
             raise ValueError(f"Quiz attempt {attempt_id} not found")
         if not attempt.completed_at:
-            raise ValueError("Quiz has not been submitted yet")
+            raise ValueError("This quiz has not been submitted yet")
 
         questions = attempt.questions
         answer_map: dict[int, list] = {
@@ -247,16 +207,17 @@ def _results(attempt_id: int, **_: Any) -> dict:
         for idx, question in enumerate(questions):
             selected = answer_map.get(idx, [])
             is_correct = _score_question(question, selected)
+            qtype = question.get("type", "single")
             correct_display = (
                 question.get("correct_answer")
-                if question.get("type", "single") == "single"
+                if qtype == "single"
                 else question.get("correct_answers", [])
             )
             breakdown.append({
                 "question_index": idx,
                 "question": question.get("question"),
                 "options": question.get("options", []),
-                "type": question.get("type", "single"),
+                "type": qtype,
                 "user_answer": selected,
                 "correct_answer": correct_display,
                 "is_correct": is_correct,
