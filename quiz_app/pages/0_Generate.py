@@ -17,7 +17,15 @@ from auth_guard import current_user_id, render_sidebar_user, require_auth
 from config import settings
 from database import init_db
 
-init_db()
+# ---------------------------------------------------------------------------
+# Database initialisation — inside @st.cache_resource so it runs during
+# Streamlit execution (when secrets are available), never at import time.
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def _init_db_once():
+    init_db()
+
+_init_db_once()
 
 st.set_page_config(page_title="Learnly — Create a course", layout="wide")
 

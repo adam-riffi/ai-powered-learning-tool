@@ -15,7 +15,15 @@ from auth_guard import current_user_id, render_sidebar_user, require_auth
 from database import get_db, init_db
 from models import Course, Lesson, QuizAttempt
 
-init_db()
+# ---------------------------------------------------------------------------
+# Database initialisation — MUST be inside @st.cache_resource so it runs
+# during Streamlit execution (when secrets are available), not at import time.
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def _init_db_once():
+    init_db()
+
+_init_db_once()
 
 st.set_page_config(page_title="Learnly", page_icon="📚", layout="wide")
 
@@ -287,26 +295,25 @@ if session_token:
             "La republication supprimera et recréera automatiquement les pages Notion."
         )
 
-    if st.button("📤 Publier / Republier sur Notion", use_container_width=False):
-        from tools import manage_notion_page
-
+    if st.button(
+        "Publish to Notion",
+        type="primary",
+        disabled=not courses_to_publish,
+        use_container_width=True,
+    ):
+        from tools.notion_tool import manage_notion_page
         for title, course in courses_to_publish.items():
-            try:
-                result = manage_notion_page(
-                    action="publish_course",
-                    course_id=course["id"],
-                    api_key=session_token,
-                    root_page_id=session_root,
-                )
-                action_label = "Republié" if course.get("notion_page_id") else "Publié"
-                st.success(
-                    f"✓ **{title}** — {action_label}, {result['pages_created']} pages créées"
-                )
-            except Exception as e:
-                st.error(f"✗ **{title}** — {e}")
-else:
-    st.divider()
-    st.info(
-        "💡 Connectez votre compte Notion pour publier vos cours. "
-        "→ Rendez-vous sur la page **Connexion Notion** dans le menu."
-    )
+            with st.spinner(f"Publishing '{title}'..."):
+                try:
+                    result = manage_notion_page(
+                        action="publish_course",
+                        course_id=course["id"],
+                        api_key=session_token,
+                        root_page_id=session_root or None,
+                    )
+                    st.success(
+                        f"**{title}** published — "
+                        f"{result['pages_created']} pages created on Notion."
+                    )
+                except Exception as e:
+                    st.error(f"Error for '{title}': {e}")

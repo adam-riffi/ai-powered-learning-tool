@@ -115,7 +115,7 @@ else:
 
     with st.expander("How to get my Notion token?", expanded=True):
         st.markdown("""
-**1.** Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+**1.** Go to [notion.so/profile/integrations/internal](https://www.notion.so/profile/integrations/internal)
 
 **2.** Click **"+ New integration"**, give it a name (e.g. *Learn AI*) and select your workspace.
 
