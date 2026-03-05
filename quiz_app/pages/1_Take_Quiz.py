@@ -26,7 +26,10 @@ if "quiz_attempts" not in st.session_state or not st.session_state["quiz_attempt
     st.stop()
 
 attempts: list[dict] = st.session_state["quiz_attempts"]
-answers_store: dict = st.session_state.setdefault("quiz_answers", {})
+
+# Initialise the nested answers store if absent
+if "quiz_answers" not in st.session_state:
+    st.session_state["quiz_answers"] = {}
 
 # Store question counts per attempt to avoid re-fetching on submit
 if "quiz_question_counts" not in st.session_state:
@@ -61,8 +64,6 @@ for lesson_block in attempts:
     if module_title or course_title:
         st.caption(f"{course_title} > {module_title}")
 
-    lesson_answers: dict[int, list[str]] = {}
-
     for idx, question in enumerate(questions):
         qtext = question.get("question", f"Question {idx + 1}")
         options: list[str] = question.get("options", [])
@@ -73,7 +74,8 @@ for lesson_block in attempts:
 
         if not options:
             st.warning("This question has no options — skipping.")
-            lesson_answers[idx] = []
+            # Persist empty answer so it doesn't block submission
+            st.session_state["quiz_answers"].setdefault(attempt_id, {})[idx] = []
             continue
 
         if qtype == "single":
@@ -84,7 +86,10 @@ for lesson_block in attempts:
                 key=key,
                 label_visibility="collapsed",
             )
-            lesson_answers[idx] = [chosen] if chosen else []
+            # Write directly into session_state so the value survives reruns
+            st.session_state["quiz_answers"].setdefault(attempt_id, {})[idx] = (
+                [chosen] if chosen else []
+            )
         else:
             st.caption("Select all that apply:")
             chosen_multi: list[str] = []
@@ -92,11 +97,10 @@ for lesson_block in attempts:
                 opt_key = f"{key}_opt_{opt}"
                 if st.checkbox(opt, key=opt_key):
                     chosen_multi.append(opt)
-            lesson_answers[idx] = chosen_multi
+            st.session_state["quiz_answers"].setdefault(attempt_id, {})[idx] = chosen_multi
 
         st.write("")
 
-    answers_store[attempt_id] = lesson_answers
     st.divider()
 
 # Submit all answers
@@ -108,7 +112,7 @@ if st.button("Submit All Answers", type="primary", use_container_width=True):
 
     for lesson_block in attempts:
         attempt_id = lesson_block["attempt_id"]
-        lesson_answers = answers_store.get(attempt_id, {})
+        lesson_answers = st.session_state["quiz_answers"].get(attempt_id, {})
         num_questions = question_counts.get(attempt_id, 0)
 
         unanswered = [
